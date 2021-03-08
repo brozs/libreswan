@@ -46,6 +46,7 @@ SUBDIRS += setup
 SUBDIRS += show
 SUBDIRS += showhostkey
 SUBDIRS += verify
+SUBDIRS += add
 
 ifeq ($(USE_PORTEXCLUDES),true)
 SUBDIRS += portexcludes

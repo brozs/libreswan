@@ -1,0 +1,134 @@
+#!@PYTHON_BINARY@
+#
+""" command to create IPsec connection configuration files """
+#
+# Copyright (C) 2021       Stepan Broz <sbroz@redhat.com>
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.  See <https://www.gnu.org/licenses/gpl2.txt>.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+
+import sys
+import argparse
+#try:
+#    import ipaddress
+#except ImportError:
+#    sys.exit("This requires the python ipaddress module from \
+#              https://pypi.python.org/pypi/ipaddress")
+
+# The drop-in directory for connection configurations, e.g. /etc/ipsec.d
+CONFDIR = "@IPSEC_CONFDDIR@"
+
+# The connection configuration dictionary
+conn_config = []
+
+def sanitize_config():
+    """ Make a sanity check of the configuration """
+
+def write_config():
+    """ Write the result to the configuration file """
+
+def main():
+    """ The main program """
+
+    parser = argparse.ArgumentParser(description='Create and add a new \
+                                     connection configuration file',
+                                     add_help=False)
+
+    opts1=parser.add_argument_group('Options')
+    opts1.add_argument('-n', '--name',
+                            required=True,
+                            help='connection name')
+
+    opts1.add_argument('-t', '--type',
+                            help='type of connection {tunnel|transport|'
+                               + 'passthrough|drop|reject}')
+
+    ike_version = opts1.add_mutually_exclusive_group()
+    ike_version.add_argument('-v1', '--ikev1',
+                                action='store_true',
+                                help='use IKEv1')
+    ike_version.add_argument('-v2', '--ikev2',
+                                action='store_true',
+                                help='use IKEv2')
+
+    opts1.add_argument('--ike',
+                            help='IKE encryption and authentication algorithms'
+                             + ' "cipher1-hash1;modpgroup1, \
+                                cipher2-hash2;modpgroup2, ..."')
+    opts1.add_argument('--esp',
+                            help='algorithms accepted for \
+                                    IPsec child SAs (phase 2) '
+                                + '"ENC-AUTH-PFSgroup"')
+
+    opts1.add_argument('-l', '--left',
+                            help='IP address or DNS hostname of the left peer \
+                                  (e.g. public address of the local host)')
+    opts1.add_argument('-lid', '--leftid',
+                            help='identification of the left peer')
+    opts1.add_argument('-lnet', '--leftsubnet', '--leftsubnets',
+                            help='private subnet(s) behind the left peer'
+                                + '"network1/netmask1, network2/netmask2, ..."')
+
+    opts1.add_argument('-r', '--right',
+                            help='IP address or DNS hostname of the right peer \
+                                  (e.g. public address of the remote host)')
+    opts1.add_argument('-rid', '--rightid',
+                            help='identification of the right peer')
+    opts1.add_argument('-rnet', '--rightsubnet', '--rightsubnets',
+                            help='private subnet(s) behind the left peer'
+                                + '"network1/netmask1, network2/netmask2, ..."')
+
+    authby = opts1.add_mutually_exclusive_group()
+    authby.add_argument('-a', '--authby',
+                            help='authentication {rsasig|rsa-sha2|rsa-sha2_384|'
+                                + 'rsa-sha2_512|secret|secret-rsasig|'
+                                + 'never|null}')
+
+#    asynauth = authby.add_mutually_exclusive_group()
+#    asynauth.add_argument('-la', '--leftauth',
+#                                help='IKEv2 asymmetric authentication of \
+#                                the left peer')
+#    asynauth.add_argument('-ra', '--rightauth',
+#                                help='IKEv2 asymmetric authentication of \
+#                                the right peer')
+
+    opts1.add_argument('--auto',
+                            help='operation to do at IPsec startup {add|start|'
+                                + 'ignore|ondemand}')
+
+    other = parser.add_argument_group('Other options')
+    other.add_argument('-h', '--help',
+                            action='help',
+                            help='show this help message and exit')
+
+    other.add_argument('-v', '--version',
+                            action='store_true',
+                            help='show version and exit')
+    other.add_argument('-d', '--debug',
+                            action='store_true',
+                            help='show debugging')
+
+    args = parser.parse_args()
+
+    if args.version:
+        print("version: 0.1")
+        sys.exit(0)
+
+    print("Hello World!\n")
+    print("conn " + args.name)
+    typ = args.type.strip()
+    print("  type=" + typ)
+    print("")
+
+# We start here
+
+if __name__ == "__main__":
+    main()
