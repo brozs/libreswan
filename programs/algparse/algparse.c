@@ -560,7 +560,7 @@ static void usage(void)
 		"\n"
 		"    -v2 | -ikev2: configure for IKEv2 (default)\n"
 		"    -v1 | -ikev1: configure for IKEv1\n"
-		"    -pfs | -pfs=yes | -pfs=no: specify PFS (perfect forward privicy)\n"
+		"    -pfs | -pfs=yes | -pfs=no: specify PFS (perfect forward secrecy)\n"
 		"         default: no\n"
 		"    -fips | -fips=yes | -fips=no: force NSS's FIPS mode\n"
 		"         default: determined by system environment\n"
