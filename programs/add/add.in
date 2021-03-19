@@ -15,22 +15,153 @@
 # for more details.
 #
 
+import os
 import sys
+import socket
 import argparse
-#try:
-#    import ipaddress
-#except ImportError:
-#    sys.exit("This requires the python ipaddress module from \
-#              https://pypi.python.org/pypi/ipaddress")
+import inspect
+
+try:
+    import ipaddress
+except ImportError:
+    sys.exit("This program requires the python ipaddress module from \
+             https://pypi.python.org/pypi/ipaddress")
 
 # The drop-in directory for connection configurations, e.g. /etc/ipsec.d
 CONFDIR = "@IPSEC_CONFDDIR@"
 
-# The connection configuration dictionary
-conn_config = []
+def print_debug(debug, name, lineno, text):
+    """ Print debug information """
+    if debug:
+        print(os.path.basename(inspect.currentframe().f_code.co_filename)
+            + ':' + str(lineno) + ': in ' + name
+            + ': ' + text)
 
-def sanitize_config():
-    """ Make a sanity check of the configuration """
+def fatal_error(text):
+    """ Print error and exit with a failure status """
+    print(text)
+    sys.exit(1)
+
+def get_peer_confstring(peer, debug):
+    """ Returns valid left=/right= string value based on the supplied string """
+
+    peer = peer.strip()
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    try:
+        data = socket.getaddrinfo(peer, None)
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peer + '"' + ' resolved OK to: '
+            + str(data))
+        confstring = peer
+
+    except socket.gaierror:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peer + '"' + ' NOT resolved')
+
+        try:
+            peer_ip = ipaddress.ip_network(peer)
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + str(peer_ip) + '"' + ' appears to be an IP network')
+            confstring = str(peer_ip)
+
+        except ValueError:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + peer + '"' + ' appears NOT to be an IP network')
+
+            try:
+                peer_ip = ipaddress.ip_address(peer)
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno,
+                    '"' + str(peer_ip) + '"' + ' appears to be an IP address')
+                confstring = str(peer_ip)
+
+            except ValueError:
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno,
+                    '"' + peer + '"' + ' appears NOT to be an IP address')
+
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno,
+                    'Out of ideas.')
+
+    # Have we found a valid string?
+    try:
+        confstring
+    except NameError as Exception:
+        raise ValueError("Participant not valid.") from Exception
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'returning: "' + str(confstring) + '"')
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'leaving')
+
+    return confstring
+
+def make_config(args, debug):
+    """ Make the configuration from argparse arguments
+
+        args        - argparse arguments
+        debug       - debug enabled boolean
+
+     Returns a dictionary with the connection configuration properties
+    """
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    # The connection configuration dictionary we're going to return
+    conn_config = {}
+
+    # Connection name
+    conn_config['name'] = args.name.strip()
+
+    # Connection type
+    conntype = ''
+    types = ['transport', 'tunnel', 'passthrough', 'drop', 'reject']
+
+    if args.type is not None:
+        conntype = str(args.type).strip().lower()
+    else:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno, 'connection type not defined, '
+                                             + 'skipping')
+
+    if conntype:
+        if conntype in types:
+            conn_config['type'] = conntype
+        else:
+            separator = ', '
+            fatal_error('Invalid connection type "' + str(args.type).strip()
+                        + '".\nAccepted values are: ' + separator.join(types) + '\n')
+
+    # Left participant
+    try:
+        conn_config['left'] = get_peer_confstring(args.left, debug)
+    except ValueError:
+        fatal_error("Left participant not valid.")
+
+    # Right participant
+    try:
+        conn_config['right'] = get_peer_confstring(args.right, debug)
+    except ValueError:
+        fatal_error("Right participant not valid.")
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'leaving')
+
+    return conn_config
 
 def write_config():
     """ Write the result to the configuration file """
@@ -38,60 +169,43 @@ def write_config():
 def main():
     """ The main program """
 
-    parser = argparse.ArgumentParser(description='Create and add a new \
-                                     connection configuration file',
-                                     add_help=False)
+    parser = argparse.ArgumentParser(description='Create new connection \
+                                                  configuration file',
+                                     add_help=False,
+                                     allow_abbrev=True)
 
-    opts1=parser.add_argument_group('Options')
+    opts1 = parser.add_argument_group('Connection general parameters')
     opts1.add_argument('-n', '--name',
                             required=True,
                             help='connection name')
-
     opts1.add_argument('-t', '--type',
                             help='type of connection {tunnel|transport|'
                                + 'passthrough|drop|reject}')
+    opts1.add_argument('--auto',
+                            help='operation to do at IPsec startup {add|start|'
+                                + 'ignore|ondemand}')
 
-    ike_version = opts1.add_mutually_exclusive_group()
+    opts2 = parser.add_argument_group('Protocol options')
+
+    ike_version = opts2.add_mutually_exclusive_group()
     ike_version.add_argument('-v1', '--ikev1',
                                 action='store_true',
                                 help='use IKEv1')
     ike_version.add_argument('-v2', '--ikev2',
                                 action='store_true',
-                                help='use IKEv2')
+                                help='use IKEv2 (default)')
 
-    opts1.add_argument('--ike',
-                            help='IKE encryption and authentication algorithms'
-                             + ' "cipher1-hash1;modpgroup1, \
-                                cipher2-hash2;modpgroup2, ..."')
-    opts1.add_argument('--esp',
-                            help='algorithms accepted for \
-                                    IPsec child SAs (phase 2) '
-                                + '"ENC-AUTH-PFSgroup"')
+    opts2.add_argument('-encap', '--encapsulation',
+                            help='optionally, force ESP/AH encapsulation \
+                                  inside UDP/TCP (NAT-T) {yes|no|auto}',
+                            action='store_true')
 
-    opts1.add_argument('-l', '--left',
-                            help='IP address or DNS hostname of the left peer \
-                                  (e.g. public address of the local host)')
-    opts1.add_argument('-lid', '--leftid',
-                            help='identification of the left peer')
-    opts1.add_argument('-lnet', '--leftsubnet', '--leftsubnets',
-                            help='private subnet(s) behind the left peer'
-                                + '"network1/netmask1, network2/netmask2, ..."')
-
-    opts1.add_argument('-r', '--right',
-                            help='IP address or DNS hostname of the right peer \
-                                  (e.g. public address of the remote host)')
-    opts1.add_argument('-rid', '--rightid',
-                            help='identification of the right peer')
-    opts1.add_argument('-rnet', '--rightsubnet', '--rightsubnets',
-                            help='private subnet(s) behind the left peer'
-                                + '"network1/netmask1, network2/netmask2, ..."')
-
-    authby = opts1.add_mutually_exclusive_group()
+    opts3 = parser.add_argument_group('Authentication/keying parameters')
+    authby = opts3.add_mutually_exclusive_group()
     authby.add_argument('-a', '--authby',
                             help='authentication {rsasig|rsa-sha2|rsa-sha2_384|'
                                 + 'rsa-sha2_512|secret|secret-rsasig|'
                                 + 'never|null}')
-
 #    asynauth = authby.add_mutually_exclusive_group()
 #    asynauth.add_argument('-la', '--leftauth',
 #                                help='IKEv2 asymmetric authentication of \
@@ -100,9 +214,57 @@ def main():
 #                                help='IKEv2 asymmetric authentication of \
 #                                the right peer')
 
-    opts1.add_argument('--auto',
-                            help='operation to do at IPsec startup {add|start|'
-                                + 'ignore|ondemand}')
+    opts3.add_argument('--ike',
+                            help='IKE encryption and authentication algorithms\
+                                 "cipher-hash;modpgroup", use multiple times \
+                                  to add more than one set',
+                            action='append')
+    opts3.add_argument('--esp',
+                            help='algorithms offered/accepted for \
+                                IPsec child SAs (phase 2) \
+                                "ENC-AUTH-PFSgroup", use multiple times to \
+                                add more than one set',
+                            action='append')
+    opts3.add_argument('--nopfs',
+                            help='disable Perfect Forward Secrecy of keys',
+                            action='store_true')
+
+    opts3.add_argument('--sendca',
+                            help='optionally, how many intermediate CA \
+                                  certificate levels to send with the end \
+                                  certificate {none|issuer|all}')
+
+    leftopts = parser.add_argument_group('Left participant\'s specific options')
+
+    leftopts.add_argument('-l', '--left',
+                            help='IP address or DNS hostname of the left peer \
+                                  (e.g. public address of the local host)',
+                            required=True)
+    leftopts.add_argument('-lid', '--leftid',
+                            help='identification of the left peer')
+    leftopts.add_argument('-lnet', '--leftsubnet',
+                            help='private subnet(s) behind the left peer \
+                                 in CIDR notation, use multiple times \
+                                 to define multiple private subnets',
+                            action='append')
+    leftopts.add_argument('-lcert', '--leftcert',
+                            help='certificate nickname of the left peer')
+
+    rightopts = parser.add_argument_group('Right participant\'s specific options')
+
+    rightopts.add_argument('-r', '--right',
+                            help='IP address or DNS hostname of the right peer \
+                                  (e.g. public address of the remote host)',
+                            required=True)
+    rightopts.add_argument('-rid', '--rightid',
+                            help='identification of the right peer')
+    rightopts.add_argument('-rnet', '--rightsubnet',
+                            help='private subnet behind the right peer \
+                                 in CIDR notation, use multiple times \
+                                 to define multiple private subnets',
+                            action='append')
+    rightopts.add_argument('-rcert', '--rightcert',
+                            help='certificate nickname of the right peer')
 
     other = parser.add_argument_group('Other options')
     other.add_argument('-h', '--help',
@@ -118,15 +280,20 @@ def main():
 
     args = parser.parse_args()
 
+    debug = args.debug
+
     if args.version:
         print("version: 0.1")
         sys.exit(0)
 
-    print("Hello World!\n")
-    print("conn " + args.name)
-    typ = args.type.strip()
-    print("  type=" + typ)
-    print("")
+    # Make the config from arguments
+    conn_config = make_config(args, debug)
+
+    if debug:
+        print(conn_config)
+
+    print("conn " + conn_config['name'])
+
 
 # We start here
 
