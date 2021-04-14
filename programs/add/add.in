@@ -20,6 +20,7 @@ import sys
 import socket
 import argparse
 import inspect
+import re
 
 try:
     import ipaddress
@@ -30,6 +31,9 @@ except ImportError:
 # The drop-in directory for connection configurations, e.g. /etc/ipsec.d
 CONFDIR = "@IPSEC_CONFDDIR@"
 
+# For testing XXX
+# CONFDIR = "/etc/ipsec.d"
+
 def print_debug(debug, name, lineno, text):
     """ Print debug information """
     if debug:
@@ -39,83 +43,202 @@ def print_debug(debug, name, lineno, text):
 
 def fatal_error(text):
     """ Print error and exit with a failure status """
-    print(text)
+    print('ERROR: ' + text)
     sys.exit(1)
 
-def get_peer_confstring(peer, debug):
-    """ Returns valid left=/right= string value based on the supplied string """
+def user_prompt(text):
+    """ Prompt the user for confirmation
 
-    peer = peer.strip()
+        text    what is displayed on screen as a question for the prompt
+
+        Boolean. Returns True if used confirmed, False otherwise.
+    """
+    # TBD XXX
+    return True
+
+def is_magic(text):
+    """ Check if the string is a magic word
+
+        text        the string to check
+
+        Boolean. It simply verifies that 'text' starts with '%'.
+    """
+
+    return bool(re.match('^%',text))
+
+def write_config(name, my_config):
+    """ Write the connection configuration file
+
+        name        absolute path to the configuration file
+        my_config   program configuration dictionary
+    """
+
+    debug = my_config['debug']
+    prompt = my_config['prompt']
+    assume_yes = my_config['assume_yes']
 
     print_debug(debug, inspect.currentframe().f_code.co_name,
         inspect.currentframe().f_lineno,
         'entered')
 
-    try:
-        data = socket.getaddrinfo(peer, None)
-        print_debug(debug, inspect.currentframe().f_code.co_name,
-            inspect.currentframe().f_lineno,
-            '"' + peer + '"' + ' resolved OK to: '
-            + str(data))
-        confstring = peer
+    fname = name.strip()
 
-    except socket.gaierror:
+    try:
+        conf_file = open(fname, "x")
+    except FileExistsError:
+        if (assume_yes or
+            (prompt and user_prompt('File "' + fname + '" already exists. ' +
+                                  'Overwrite?'))):
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            'Overwriting "' + fname + '".')
+            try:
+                conf_file = open(fname, "w")
+            except (OSError, IOError) as fexcept:
+                fatal_error('Error while opening ' + fname + ' for writing: '
+                + str(os.strerror(fexcept.errno)))
+
+        else:
+            fatal_error('File "' + fname + '" already exists, aborting.')
+
+    except (OSError, IOError) as fexcept:
+        fatal_error('Error while opening ' + fname + ' for writing: '
+        + str(os.strerror(fexcept.errno)))
+
+    conf_file.close()
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'leaving')
+
+
+
+def get_peer_confstring(peer, my_config):
+    """ Validates and prepares the left=/right= string value based on the
+        supplied "peer" string
+
+        peer        string given by the user
+        my_config   program configuration dictionary
+
+        Raises ValueError if all checks fail, e.g. hostname does not DNS
+        resolve, invalid IP address format, etc.
+    """
+
+    debug = my_config['debug']
+    use_dns = my_config['dns']
+    prompt = my_config['prompt']
+    assume_yes = my_config['assume_yes']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    # Check magic words XXX
+    if is_magic(peer):
         print_debug(debug, inspect.currentframe().f_code.co_name,
             inspect.currentframe().f_lineno,
-            '"' + peer + '"' + ' NOT resolved')
+            '"' + peer + '"' + ' appears to be a magic word, leaving')
+        return peer
+
+    # No magic, continue
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        '"' + peer + '"' + ' is NOT a magic word')
+
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peer + '"' + ' appears NOT to be an IP address')
 
         try:
             peer_ip = ipaddress.ip_network(peer)
-            print_debug(debug, inspect.currentframe().f_code.co_name,
-                inspect.currentframe().f_lineno,
-                '"' + str(peer_ip) + '"' + ' appears to be an IP network')
-            confstring = str(peer_ip)
-
         except ValueError:
             print_debug(debug, inspect.currentframe().f_code.co_name,
                 inspect.currentframe().f_lineno,
                 '"' + peer + '"' + ' appears NOT to be an IP network')
 
             try:
-                peer_ip = ipaddress.ip_address(peer)
-                print_debug(debug, inspect.currentframe().f_code.co_name,
-                    inspect.currentframe().f_lineno,
-                    '"' + str(peer_ip) + '"' + ' appears to be an IP address')
-                confstring = str(peer_ip)
-
+                peer_ip = ipaddress.ip_network(peer, strict=False)
             except ValueError:
                 print_debug(debug, inspect.currentframe().f_code.co_name,
                     inspect.currentframe().f_lineno,
-                    '"' + peer + '"' + ' appears NOT to be an IP address')
+                    '"' + peer + '"' + ' appears NOT to be an IP network' +
+                    ' with host bits set')
+
+                if use_dns:
+                    try:
+                        data = socket.getaddrinfo(peer, port=None)
+                    except socket.gaierror:
+                        print_debug(debug,
+                            inspect.currentframe().f_code.co_name,
+                            inspect.currentframe().f_lineno,
+                            '"' + peer + '"' + ' does NOT resolve')
+                        # Dooomed. Fallthrough.
+
+                    else:
+                        print_debug(debug,
+                            inspect.currentframe().f_code.co_name,
+                            inspect.currentframe().f_lineno,
+                            '"' + peer + '"' + ' resolved OK to: ' +
+                            str(data) + ', leaving')
+                        return peer
+
+                else:
+                    print_debug(debug,
+                            inspect.currentframe().f_code.co_name,
+                            inspect.currentframe().f_lineno,
+                            '--nodns present, skipping DNS checks. ' +
+                            'Using "' + peer + '"and leaving')
+                    # Check for valid hostname string XXX
+                    return peer
+
+            else:
+                err_string = '"' + str(peer) + '"' + ' appears to be an '
+                err_string += 'IP network with some host bits set. '
 
                 print_debug(debug, inspect.currentframe().f_code.co_name,
-                    inspect.currentframe().f_lineno,
-                    'Out of ideas.')
+                    inspect.currentframe().f_lineno, err_string)
 
-    # Have we found a valid string?
-    try:
-        confstring
-    except NameError as Exception:
-        raise ValueError("Participant not valid.") from Exception
+                if (assume_yes or
+                    (prompt and user_prompt(err_string +
+                        '"' + str(peer) + '" ' +
+                        'appears to be an IP network with host bits ' +
+                        'set, use "' + str(peer_ip) + ': instead?'))):
 
-    print_debug(debug, inspect.currentframe().f_code.co_name,
-        inspect.currentframe().f_lineno,
-        'returning: "' + str(confstring) + '"')
+                    print_debug(debug, inspect.currentframe().f_code.co_name,
+                        inspect.currentframe().f_lineno,
+                        'Using "' + str(peer_ip) + '" and leaving')
+                    return str(peer_ip)
 
-    print_debug(debug, inspect.currentframe().f_code.co_name,
-        inspect.currentframe().f_lineno,
-        'leaving')
+                # else, Fallthrough
 
-    return confstring
+        else:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + str(peer) + '"' +
+                ' appears to be an IP network, leaving')
+            return str(peer_ip)
 
-def make_config(args, debug):
+    else:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + str(peer_ip) + '"' + ' appears to be an IP address, leaving')
+        return str(peer_ip)
+
+    raise ValueError("Participant " + peer + " not valid.") from Exception
+
+def make_config(args, my_config):
     """ Make the configuration from argparse arguments
 
         args        - argparse arguments
-        debug       - debug enabled boolean
+        my_config   - program configuration dictionary
 
      Returns a dictionary with the connection configuration properties
     """
+
+    debug = my_config['debug']
 
     print_debug(debug, inspect.currentframe().f_code.co_name,
         inspect.currentframe().f_lineno,
@@ -144,27 +267,29 @@ def make_config(args, debug):
         else:
             separator = ', '
             fatal_error('Invalid connection type "' + str(args.type).strip()
-                        + '".\nAccepted values are: ' + separator.join(types) + '\n')
+                        + '".\nAccepted values are: '
+                        + separator.join(types)+ '\n')
 
     # Left participant
     try:
-        conn_config['left'] = get_peer_confstring(args.left, debug)
+        conn_config['left'] = args.left.strip()
+        conn_config['left'] = get_peer_confstring(conn_config['left'], my_config)
     except ValueError:
-        fatal_error("Left participant not valid.")
+        fatal_error('Left participant "' + args.left.strip() +
+                    '" is not valid.')
 
     # Right participant
     try:
-        conn_config['right'] = get_peer_confstring(args.right, debug)
+        conn_config['right'] = args.right.strip()
+        conn_config['right'] = get_peer_confstring(conn_config['right'], my_config)
     except ValueError:
-        fatal_error("Right participant not valid.")
+        fatal_error('Right participant "' + args.right.strip() +
+                    '" is not valid.')
 
     print_debug(debug, inspect.currentframe().f_code.co_name,
         inspect.currentframe().f_lineno, 'leaving')
 
     return conn_config
-
-def write_config():
-    """ Write the result to the configuration file """
 
 def main():
     """ The main program """
@@ -195,10 +320,10 @@ def main():
                                 action='store_true',
                                 help='use IKEv2 (default)')
 
-    opts2.add_argument('-encap', '--encapsulation',
-                            help='optionally, force ESP/AH encapsulation \
-                                  inside UDP/TCP (NAT-T) {yes|no|auto}',
-                            action='store_true')
+    # opts2.add_argument('-encap', '--encapsulate',
+    #                        help='optionally, force ESP/AH encapsulation \
+    #                              inside UDP/TCP (NAT-T) {yes|no|auto}',
+    #                        action='store_true')
 
     opts3 = parser.add_argument_group('Authentication/keying parameters')
     authby = opts3.add_mutually_exclusive_group()
@@ -250,7 +375,8 @@ def main():
     leftopts.add_argument('-lcert', '--leftcert',
                             help='certificate nickname of the left peer')
 
-    rightopts = parser.add_argument_group('Right participant\'s specific options')
+    rightopts = parser.add_argument_group('Right participant\'s specific'
+                                         + ' options')
 
     rightopts.add_argument('-r', '--right',
                             help='IP address or DNS hostname of the right peer \
@@ -270,30 +396,53 @@ def main():
     other.add_argument('-h', '--help',
                             action='help',
                             help='show this help message and exit')
-
     other.add_argument('-v', '--version',
                             action='store_true',
                             help='show version and exit')
+    ask = other.add_mutually_exclusive_group()
+    ask.add_argument('-i', '--interactive',
+                            action='store_true',
+                            help='ask the user if needed')
+    ask.add_argument('-y', '--yes',
+                            action='store_true',
+                            help='assume "yes" to all possible questions')
     other.add_argument('-d', '--debug',
                             action='store_true',
                             help='show debugging')
+    other.add_argument('--nodns',
+                            action='store_true',
+                            help='do not validate values using DNS resolution')
 
     args = parser.parse_args()
 
-    debug = args.debug
+    # Done parsing arguments, use them now.
+
+    # Program configuration dictionary
+    my_config = {
+        'debug': args.debug,
+        'prompt': args.interactive,
+        'assume_yes': args.yes,
+        'dns': not args.nodns
+    }
 
     if args.version:
         print("version: 0.1")
         sys.exit(0)
 
     # Make the config from arguments
-    conn_config = make_config(args, debug)
+    conn_config = make_config(args, my_config)
 
-    if debug:
-        print(conn_config)
+    print(conn_config)
 
     print("conn " + conn_config['name'])
 
+    # This maybe should be inside a function? XXX
+    config_fname = CONFDIR + '/' + conn_config['name'].strip()
+    write_config(config_fname, my_config)
+
+    print_debug(my_config['debug'], inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'done.')
 
 # We start here
 
