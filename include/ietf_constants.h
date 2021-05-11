@@ -1783,7 +1783,7 @@ enum ipsec_cipher_algo {
 	ESP_RC5 = 4,
 	ESP_IDEA = 5,
 	ESP_CAST = 6,
-	ESP_BLOWFISH = 7,	/* obsoleyed */
+	ESP_BLOWFISH = 7,	/* obsoleted */
 	ESP_3IDEA = 8,
 	ESP_DES_IV32 = 9,
 	ESP_RC4 = 10,
