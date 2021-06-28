@@ -22,6 +22,9 @@ import argparse
 import inspect
 import re
 
+# Safe temporary files
+from tempfile import mkstemp
+
 # Handle selected signals properly
 from signal import signal, SIGINT, SIGTSTP, SIGQUIT
 
@@ -36,6 +39,9 @@ CONFDIR = "@IPSEC_CONFDDIR@"
 
 # The preferred connection configuration indentation string
 INDENT_STRING = '\t'
+
+# Suffix to be used for configuration filenames
+CONF_SUFFIX = '.conf'
 
 # List separator
 SEPARATOR = ','
@@ -102,14 +108,19 @@ def print_debug(debug, name, lineno, text):
             + ':' + str(lineno) + ': in ' + name
             + '(): ' + text)
 
-def fatal_error(text):
-    """ Print error and exit with a failure status """
-    print('ERROR: ' + text)
-    sys.exit(1)
-
 def print_info(text):
     """ Print on standard output """
     print('INFO: ' + text)
+
+def print_error(text):
+    """ Print an error on standard output """
+    print('ERROR: ' + text)
+
+def fatal_error(text):
+    """ Print error and exit with a failure status """
+    print_error(text)
+    sys.exit(1)
+
 
 def user_prompt(text):
     """ Prompt the user for confirmation
@@ -276,7 +287,7 @@ def write_config(conn_config, name, my_config):
 
     conf_string = get_config_avp_string(conn_config)
 
-    fname = name.strip()
+    fname = name.strip() + CONF_SUFFIX
 
     # Connection configuration review
     print_info('About to write the following configuration'
@@ -287,34 +298,68 @@ def write_config(conn_config, name, my_config):
     if (assume_yes or
         (prompt and user_prompt('Looks good?'))):
 
-        try:
-            conf_file = open(fname, "x")
-        except FileExistsError:
+        if os.path.exists(fname):
+            # Configuration file already exists
             if (assume_yes or
-                (prompt and user_prompt('File "' + fname + '" already exists.\n' +
-                                    'Overwrite?'))):
+                (prompt and user_prompt('File "' + fname
+                    + '" already exists.\n' + 'Overwrite?'))):
                 print_debug(debug, inspect.currentframe().f_code.co_name,
-                inspect.currentframe().f_lineno,
-                'Overwriting "' + fname + '".')
-                try:
-                    conf_file = open(fname, "w")
-                except (OSError, IOError) as fexcept:
-                    fatal_error('Error while opening ' + fname + ' for writing: '
-                    + str(os.strerror(fexcept.errno)))
-
+                    inspect.currentframe().f_lineno,
+                    'Overwriting "' + fname + '".')
+                # Good to go, fallthrough
             else:
-                fatal_error('File "' + fname + '" already exists, aborting.')
+                fatal_error('File "' + fname
+                    + '" already exists, aborting.')
 
-        except (OSError, IOError) as fexcept:
-            fatal_error('Error while opening ' + fname + ' for writing: '
-            + str(os.strerror(fexcept.errno)))
-
+        # Configuration file does not exist yet
+        # Create a safe temporary file
         try:
-            conf_file.write(conf_string)
-        except (OSError, IOError) as fexcept:
-            conf_file.close()
-            fatal_error('Failed writing to ' + fname + ': '
-            + str(os.strerror(fexcept.errno)))
+            tmp_fd, tmp_path = mkstemp(dir=CONFDIR, text=True)
+            tmp_f = os.fdopen(tmp_fd, 'w')
+        except (OSError, IOError, PermissionError) as fexcept:
+            fatal_error('Failed opening a temporary file in "'
+                + CONFDIR + '": '
+                + str(os.strerror(fexcept.errno)))
+        else:
+            # Temporary file opened
+            try:
+                # Writing to the temporary file
+                tmp_f.write(conf_string)
+            except (OSError, IOError, PermissionError) as fexcept:
+                print_error('Failed writing to the temporary file "'
+                    + tmp_path + '": '
+                    + str(os.strerror(fexcept.errno)))
+                tmp_f.close()
+                try:
+                    # Remove the temporary file.
+                    os.unlink(tmp_path)
+                except (OSError, IOError, PermissionError) as fexcept:
+                    print_error('Could not remove the temporary file "'
+                        + tmp_path + '": '
+                        + str(os.strerror(fexcept.errno)))
+                finally:
+                    fatal_error('Failed writing to the temporary file, '
+                        + 'aborting.')
+            else:
+                # Make sure the changes make it to the disk
+                tmp_f.flush()
+                os.fsync(tmp_f.fileno())
+                tmp_f.close()
+
+                try:
+                    os.replace(tmp_path, fname)
+                except (OSError, IOError) as fexcept:
+                    try:
+                        os.unlink(tmp_path)
+                    except (OSError, IOError) as fexcept:
+                        print_error('Could not remove the temporary file "'
+                            + tmp_path + '": '
+                            + str(os.strerror(fexcept.errno)))
+                    finally:
+                        fatal_error('Failed putting the '
+                            + 'configuration file "'
+                            + fname + '" in place: '
+                            + str(os.strerror(fexcept.errno)))
 
     else:
         # We don't like the config.
@@ -357,11 +402,11 @@ def get_net_string(net, my_config):
         except ValueError:
             print_debug(debug, inspect.currentframe().f_code.co_name,
                 inspect.currentframe().f_lineno,
-                '"' + net + '"' + ' appears NOT to be an IP network' +
-                ' with host bits set')
+                '"' + net + '"' + ' appears NOT to be an IP network'
+                + ' with host bits set')
 
         else:
-            err_string = '"' + str(net) + '"' + ' appears to be an '
+            err_string = '\n"' + str(net) + '"' + ' appears to be an '
             err_string += 'IP network with some host bits set. '
 
             print_debug(debug, inspect.currentframe().f_code.co_name,
@@ -369,11 +414,11 @@ def get_net_string(net, my_config):
 
             if (assume_yes or
                 (prompt and user_prompt(err_string +
-                    '\n Use "' + str(net_ip) + ' instead?'))):
+                    '\nUse "' + str(net_ip) + ' instead?'))):
 
                 print_debug(debug, inspect.currentframe().f_code.co_name,
                     inspect.currentframe().f_lineno,
-                    'User confirmed using "' + str(net_ip) + '" and leaving.')
+                    'User confirmed using "' + str(net_ip) + '". Leaving.')
                 return str(net_ip)
 
             # else, fallthrough (fail)
@@ -562,8 +607,8 @@ def get_member_string(member, values, my_config):
         my_config   program configuration
 
         Returns a string, which may be empty if member is None.
-        Raises ValueError when member is not None and not a member of the values
-        list.
+        Raises ValueError when member is not None and not a member of
+        the values list.
     """
 
     debug = my_config['debug']
@@ -807,6 +852,7 @@ def main():
     authby.add_argument('-a', '--authby',
                             help='authentication method ' + '{'
                                   + '|'.join(AUTH_METHODS) + '}')
+# May not implement at all.
 #    asynauth = authby.add_mutually_exclusive_group()
 #    asynauth.add_argument('-la', '--leftauth',
 #                                help='IKEv2 asymmetric authentication of \
@@ -836,8 +882,8 @@ def main():
                                   certificate ' +
                                   '{' + '|'.join(SEND_CA_LEVELS) + '}')
 
-    leftopts = parser.add_argument_group('Left participant\'s specific \
-                                         options')
+    leftopts = parser.add_argument_group('Left participant\'s specific'
+                                        + ' options')
 
     leftopts.add_argument('-l', '--left',
                             help='IP address or DNS hostname of the left peer \
@@ -858,8 +904,8 @@ def main():
                                          + ' options')
 
     rightopts.add_argument('-r', '--right',
-                            help='IP address or DNS hostname of the right peer \
-                                  (e.g. public address of the remote host)',
+                            help='IP address or DNS hostname of the right \
+                                peer (e.g. public address of the remote host)',
                             required=True)
     rightopts.add_argument('-rid', '--rightid',
                             help='identification of the right peer')
