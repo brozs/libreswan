@@ -32,10 +32,7 @@ except ImportError:
              https://pypi.python.org/pypi/ipaddress")
 
 # The drop-in directory for connection configurations, e.g. /etc/ipsec.d
-# CONFDIR = "@IPSEC_CONFDDIR@"
-
-# XXX: For dev/testing only
-CONFDIR = "/etc/ipsec.d"
+CONFDIR = "@IPSEC_CONFDDIR@"
 
 # The preferred connection configuration indentation string
 INDENT_STRING = '\t'
@@ -500,7 +497,6 @@ def get_subnet_list(subnets, my_config):
     subnet_list = []
 
     for subnet in subnets:
-        # XXX: magic values!
         try:
             subnet_list.append(get_net_string(subnet, my_config))
         except ValueError:
