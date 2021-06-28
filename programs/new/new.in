@@ -1,0 +1,937 @@
+#!@PYTHON_BINARY@
+#
+""" command to create IPsec connection configuration files """
+#
+# Copyright (C) 2021       Stepan Broz <sbroz@redhat.com>
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.  See <https://www.gnu.org/licenses/gpl2.txt>.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+#
+
+import os
+import sys
+import socket
+import argparse
+import inspect
+import re
+
+# Handle selected signals properly
+from signal import signal, SIGINT, SIGTSTP, SIGQUIT
+
+try:
+    import ipaddress
+except ImportError:
+    sys.exit("This program requires the python ipaddress module from \
+             https://pypi.python.org/pypi/ipaddress")
+
+# The drop-in directory for connection configurations, e.g. /etc/ipsec.d
+# CONFDIR = "@IPSEC_CONFDDIR@"
+
+# XXX: For dev/testing only
+CONFDIR = "/etc/ipsec.d"
+
+# The preferred connection configuration indentation string
+INDENT_STRING = '\t'
+
+# List separator
+SEPARATOR = ','
+
+# Validate FQDNs per RFC 1035, including underscores
+FQDN_REGEX = r'^(?!-)[a-z-_\d]{1,63}(?<!-)$'
+
+# Validate E-mail address
+EMAIL_REGEX = r'(^[a-z0-9_.+-]+@[a-z0-9-]+\.[a-z0-9-.]+$)'
+
+# Definition of IPsec configuration lists:
+# type
+CONN_TYPES = ['tunnel',
+             'transport',
+             'passthrough',
+             'drop',
+             'reject']
+
+# authby
+AUTH_METHODS = ['rsasig',
+                'rsa-sha2',
+                'rsa-sha2_384',
+                'rsa-sha2_512',
+                'secret',
+                'secret-rsasig',
+                'never',
+                'null']
+
+# sendca
+SEND_CA_LEVELS = ['none',
+                  'issuer',
+                  'all']
+
+# auto
+AUTO = ['add',
+        'start',
+        'ignore',
+        'ondemand']
+
+# encapsulate and enable-tcp
+ENCAPSULATE = ['no',
+               'auto',
+               'auto-tcp',
+               'auto-tcp-fallback',
+               'force',
+               'force-tcp',
+               'force-tcp-fallback']
+
+# End of IPsec configuration lists definitions
+
+def abort():
+    """ Terminate gracefully. Abort operations. """
+    print('Aborted.')
+    sys.exit(0)
+
+def handler(signo, frame):
+    """ ACME signal handler """
+    abort()
+
+def print_debug(debug, name, lineno, text):
+    """ Print debug information """
+    if debug:
+        print(os.path.basename(inspect.currentframe().f_code.co_filename)
+            + ':' + str(lineno) + ': in ' + name
+            + '(): ' + text)
+
+def fatal_error(text):
+    """ Print error and exit with a failure status """
+    print('ERROR: ' + text)
+    sys.exit(1)
+
+def print_info(text):
+    """ Print on standard output """
+    print('INFO: ' + text)
+
+def user_prompt(text):
+    """ Prompt the user for confirmation
+
+        text    what is displayed on screen as a question for the prompt
+
+        Boolean.
+        Returns True if input is 'y' or 'yes'.
+        Returns False if input is 'n' or 'no' or '' (empty input).
+        Loops otherwise.
+    """
+    confirm = ('y','yes')
+    deny = ('n', 'no', '')
+
+    # Expecting preformatted text (question)
+    print(text, end=' ')
+
+    # Loop until we get some acceptable input.
+    while True:
+        # Read the user input
+        try:
+            answer = input('[y/N]: ').lower()
+        except EOFError:
+            # Ctrl-D ...
+            abort()
+        else:
+            if answer in confirm:
+                return True
+            if answer in deny:
+                return False
+
+def is_magic(text):
+    """ Check if the string is a magic word
+
+        text        the string to check
+
+        Boolean. It simply verifies that 'text' starts with '%'.
+    """
+
+    return bool(re.match('^%',text))
+
+def is_literal(text):
+    """ Check if the string should be interpreted as a literal
+
+        text        the string to check
+
+        Boolean. Check that 'text' starts with '@'.
+    """
+
+    return bool(re.match('^@',text))
+
+def is_email(text):
+    """ Check if the string is an acceptable email address """
+
+    return bool(re.match(EMAIL_REGEX, text, re.IGNORECASE))
+
+def is_fqdn(text):
+    """ Check if the string is accetable as FQDN """
+
+    # Get rid of any quotes, they don't have to make perfect pairs.
+    text = re.sub(r'(^[\'"]*)(.*)([\'"])$',r'\2',
+            text, re.IGNORECASE)
+
+    # Maximum length by RFC 1035
+    if len(text) > 255:
+        return False
+
+    # Remove a trailing dot
+    if text[-1] == '.':
+        text = text[:-1]
+
+    allowed = re.compile(FQDN_REGEX, re.IGNORECASE)
+
+    return all(allowed.match(part) for part in text.split('.'))
+
+def get_config_encap_string(encapsulate):
+    """ Creates the configuration string for the "encapsulate" key.
+
+        Returns a string.
+        The "encapsulate" key does not directly map to a single configuration
+        option but to two: "encapsualtion" and "enable-tcp". The mapping is
+        done here.
+    """
+
+    # Does not need the lead INDENT_STRING, it was already added
+    # in get_config_avp_string()
+    encap_string = 'encapsulation='
+
+    # encapsulation
+    if encapsulate == 'no':
+        encap_string += 'no'
+
+    elif encapsulate.startswith('auto'):
+        encap_string += 'auto'
+
+    elif encapsulate.startswith('force'):
+        encap_string += 'yes'
+
+    else:
+        # This should not ever happen.
+        fatal_error('Uknown encapsulation option "' + encapsulate + '"!')
+
+    encap_string += '\n'
+
+    # enable-tcp
+    if encapsulate.endswith('tcp'):
+        encap_string += INDENT_STRING + 'enable-tcp=yes' + '\n'
+
+    elif encapsulate.endswith('fallback'):
+        encap_string += INDENT_STRING + 'enable-tcp=fallback' + '\n'
+
+    return encap_string
+
+def get_config_avp_string(conn_config):
+    """ Creates the configuration string (name=value) from the config
+        dictionary
+
+        Returns a string.
+        The values inside the dictionary need to be already
+        verified at this point. No more sanity checks are done here.
+    """
+
+    # conn <connection_name>
+    config_string = 'conn ' + conn_config['name'] + '\n'
+
+    for option in conn_config.keys():
+        if option == 'name':
+            continue
+
+        config_string += INDENT_STRING
+
+        # Special cases are handled here
+
+        # encapsulation and enable-tcp
+        if option == 'encapsulate':
+            config_string += get_config_encap_string(conn_config[option])
+            continue
+
+        # Other options are simple
+        config_string += option + '=' + conn_config[option]
+        config_string += '\n'
+
+    return config_string
+
+def write_config(conn_config, name, my_config):
+    """ Write the connection configuration file
+
+        conn_config connection configuration dictionary
+        name        absolute path to the configuration file
+        my_config   program configuration dictionary
+    """
+
+    debug = my_config['debug']
+    prompt = my_config['prompt']
+    assume_yes = my_config['assume_yes']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        str(conn_config))
+
+    conf_string = get_config_avp_string(conn_config)
+
+    fname = name.strip()
+
+    # Connection configuration review
+    print_info('About to write the following configuration'
+                 + ' to "' + fname + '":'
+                 + '\n\n' + conf_string)
+
+    # Are we good to go?
+    if (assume_yes or
+        (prompt and user_prompt('Looks good?'))):
+
+        try:
+            conf_file = open(fname, "x")
+        except FileExistsError:
+            if (assume_yes or
+                (prompt and user_prompt('File "' + fname + '" already exists.\n' +
+                                    'Overwrite?'))):
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                'Overwriting "' + fname + '".')
+                try:
+                    conf_file = open(fname, "w")
+                except (OSError, IOError) as fexcept:
+                    fatal_error('Error while opening ' + fname + ' for writing: '
+                    + str(os.strerror(fexcept.errno)))
+
+            else:
+                fatal_error('File "' + fname + '" already exists, aborting.')
+
+        except (OSError, IOError) as fexcept:
+            fatal_error('Error while opening ' + fname + ' for writing: '
+            + str(os.strerror(fexcept.errno)))
+
+        try:
+            conf_file.write(conf_string)
+        except (OSError, IOError) as fexcept:
+            conf_file.close()
+            fatal_error('Failed writing to ' + fname + ': '
+            + str(os.strerror(fexcept.errno)))
+
+    else:
+        # We don't like the config.
+        abort()
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'leaving')
+
+def get_net_string(net, my_config):
+    """ Validates if the supplied net string is a network.
+
+        net         string given by the user
+        my_config   program configuration
+
+        Returns string.
+        Raises ValueError if all checks fail.
+
+    """
+
+    debug = my_config['debug']
+    prompt = my_config['prompt']
+    assume_yes = my_config['assume_yes']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    try:
+        # IP network?
+        net_ip = ipaddress.ip_network(net)
+    except ValueError:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + net + '"' + ' appears NOT to be an IP network')
+
+        try:
+            # Host bits in IP network must not be set
+            net_ip = ipaddress.ip_network(net, strict=False)
+        except ValueError:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + net + '"' + ' appears NOT to be an IP network' +
+                ' with host bits set')
+
+        else:
+            err_string = '"' + str(net) + '"' + ' appears to be an '
+            err_string += 'IP network with some host bits set. '
+
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno, err_string)
+
+            if (assume_yes or
+                (prompt and user_prompt(err_string +
+                    '\n Use "' + str(net_ip) + ' instead?'))):
+
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno,
+                    'User confirmed using "' + str(net_ip) + '" and leaving.')
+                return str(net_ip)
+
+            # else, fallthrough (fail)
+
+    else:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + str(net) + '"' +
+            ' appears to be an IP network, leaving.')
+        return str(net_ip)
+
+    raise ValueError("Network " + net + " not valid.") from Exception
+
+def get_peer_string(peer, my_config):
+    """ Validates and prepares the left=/right= string value based on the
+        supplied "peer" string
+
+        peer        string given by the user
+        my_config   program configuration dictionary
+
+        Raises ValueError if all checks fail, e.g. hostname does not DNS
+        resolve, invalid IP address format, etc.
+    """
+
+    debug = my_config['debug']
+    use_dns = my_config['dns']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    if is_magic(peer):
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peer + '"' + ' appears to be a magic word, leaving')
+        return peer
+
+    # No magic, continue
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        '"' + peer + '"' + ' is NOT a magic word')
+
+    # IP address?
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peer + '"' + ' appears NOT to be an IP address')
+
+        try:
+            # IP network?
+            peer_ip = get_net_string(peer, my_config)
+        except ValueError:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + peer + '"' + ' is NOT an IP network')
+
+            # Is it a hostname?
+            if use_dns:
+                # If DNS is enabled, does it resolve to anything?
+                try:
+                    data = socket.getaddrinfo(peer, port=None)
+                except socket.gaierror:
+                    print_debug(debug,
+                        inspect.currentframe().f_code.co_name,
+                        inspect.currentframe().f_lineno,
+                        '"' + peer + '"' + ' does NOT resolve')
+                    # Dooomed. Fail later, fallthrough.
+
+                else:
+                    # Successfull getaddrinfo()
+                    print_debug(debug,
+                        inspect.currentframe().f_code.co_name,
+                        inspect.currentframe().f_lineno,
+                        '"' + peer + '"' + ' resolved OK to: ' +
+                        str(data) + ', leaving')
+                    return peer
+
+            # DNS disabled, use FQDN_REGEX check at least.
+            elif is_fqdn(peer):
+                print_debug(debug,
+                    inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno,
+                    'DNS checks disabled, but ' +
+                    '"' + peer + '" appears as a valid FQDN, leaving.')
+                return peer
+            # else, fallthrough (fail)
+
+        else:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + str(peer_ip) + '" ' +
+                'is an IP network, leaving.')
+            return str(peer_ip)
+
+    else:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno, '"' + str(peer_ip)
+            + '"' + ' appears to be an IP address, leaving.')
+        return str(peer_ip)
+
+    raise ValueError("Participant " + peer + " not valid.") from Exception
+
+def get_subnet_list(subnets, my_config):
+    """ Validates the leftsubnets/rightsubnets string
+
+        subnets     list of strings given by the user
+        my_config   program configuration
+
+        Returns a list.
+        Fails fatally if a list member is not a valid subnet string.
+    """
+
+    debug = my_config['debug']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    subnet_list = []
+
+    for subnet in subnets:
+        # XXX: magic values!
+        try:
+            subnet_list.append(get_net_string(subnet, my_config))
+        except ValueError:
+            fatal_error('The subnet string "' + subnet + '" is not valid.')
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'leaving')
+
+    return subnet_list
+
+def get_peerid_string(peerid, my_config):
+    """ Validates  the leftid=/rightid= string value based on the supplied
+        string "peerid".
+
+        peerid        string given by the user
+        my_config   program configuration dictionary
+
+        Raises ValueError if all checks fail, e.g. hostname does not DNS
+        resolve, invalid IP address format, etc.
+    """
+
+    debug = my_config['debug']
+    # use_dns = my_config['dns']
+    # prompt = my_config['prompt']
+    # assume_yes = my_config['assume_yes']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    # %myid, %defaultroute, %any, %fromcert, ...
+    if is_magic(peerid):
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peerid + '"' + ' appears to be a magic word, leaving')
+        return peerid
+
+    # No magic, continue
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        '"' + peerid + '"' + ' is NOT a magic word')
+
+    # "@some.text"
+    if is_literal(peerid):
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"' + peerid + '"' + ' is a literal string, leaving')
+        return peerid
+
+    # Not a literal, continue
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        '"' + peerid + '"' + ' is NOT a literal string')
+
+    raise ValueError('ID string "' + peerid + '" not valid.') from Exception
+
+def get_member_string(member, values, my_config):
+    """ Find member in the values list
+
+        member      an element to find
+        values      the list to find the element in
+        my_config   program configuration
+
+        Returns a string, which may be empty if member is None.
+        Raises ValueError when member is not None and not a member of the values
+        list.
+    """
+
+    debug = my_config['debug']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    if member is not None:
+        member = str(member).strip().lower()
+    else:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            '"member" undefined, leaving.')
+        return ''
+
+    if member in values:
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno,
+            'member "' + member + '" found in acceptable values, leaving.')
+        return member
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'Member "' + member + '" not found in the list: {'
+        + '|'.join(values) + '}\nLeaving.')
+
+    raise ValueError('Invalid value "' + member + '".') from Exception
+
+def check_member_string(arg_name, arg_value, values_list, my_config):
+    """ Wrapper around get_member_string()
+
+        arg_name        string, the argument name (for printed output)
+        arg_value       the argument value as received
+        values_list     the list of acceptable values
+        my_config       program configuration
+
+        Calls get_member_string() and returns the return value, if successful.
+        Fails fatally if not.
+    """
+
+    debug = my_config['debug']
+    arg_name = '--' + arg_name
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'Looking for ' + arg_name + '...')
+
+    try:
+        result = get_member_string(arg_value, values_list, my_config)
+    except ValueError:
+        fatal_error('Invalid value of ' + arg_name + ': "'
+                     + str(arg_value).strip()
+                     + '".\nAccepted values are: '
+                     + SEPARATOR.join(values_list) + '\n')
+    return result
+
+def make_config(args, my_config):
+    """ Make the configuration from argparse arguments
+
+        args        - argparse arguments
+        my_config   - program configuration dictionary
+
+    Most of the logic is done here.
+    Returns a dictionary with the connection configuration properties.
+    The order in which we add the conn_config dictionary values in is the order
+    in which they appear in the configuration file.
+    """
+
+    debug = my_config['debug']
+
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno,
+        'entered')
+
+    # The connection configuration is a dictionary
+    conn_config = {'name': args.name.strip()}
+
+    # Connection type
+    conntype = check_member_string('type', args.type, CONN_TYPES, my_config)
+    if conntype:
+        conn_config['type'] = conntype
+
+    # Skeleton dictionary with left/right peers, those are always present.
+    participants = {'left':
+                        {'peer': args.left.strip()},
+                    'right':
+                        {'peer': args.right.strip()}
+                    }
+
+    # leftid/rightid are optional
+    if args.leftid is not None:
+        participants['left'].update({'id': args.leftid.strip()})
+    if args.rightid is not None:
+        participants['right'].update({'id': args.rightid.strip()})
+
+    # leftsubnet(s)/rightsubnet(s) are optional
+    if args.leftsubnet is not None:
+        participants['left'].update({'subnets': args.leftsubnet})
+    if args.rightsubnet is not None:
+        participants['right'].update({'subnets': args.rightsubnet})
+
+    # Handle the peers and other related options in the same loop
+    # so that the config is grouped nicely.
+    for peer, peer_options in participants.items():
+
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno, 'Looking for my "' + peer
+            + '" participant. ')
+
+        try:
+            conn_config[peer] = get_peer_string(peer_options['peer'],
+                                    my_config)
+        except ValueError:
+            fatal_error('The left/right string "' + peer_options['peer']
+                        + '" is not valid.')
+
+        # left/right + id
+        peerid = peer + 'id'
+
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno, 'Looking for "' + peerid + '".')
+
+        try:
+            conn_config[peerid] = get_peerid_string(peer_options['id'],
+                                    my_config)
+        except ValueError:
+            fatal_error('The ' + peerid + ' string "' + peer_options['id']
+                        + '" is not valid.')
+        except KeyError:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + peerid + '" was not defined.')
+
+        # leftsubnet(s)/rightsubnet(s)
+        peersubnets = peer + 'subnets'
+
+        print_debug(debug, inspect.currentframe().f_code.co_name,
+            inspect.currentframe().f_lineno, 'Looking for "'
+                 + peersubnets + '".')
+
+        try:
+            subnet_list = get_subnet_list(peer_options['subnets'], my_config)
+        except KeyError:
+            print_debug(debug, inspect.currentframe().f_code.co_name,
+                inspect.currentframe().f_lineno,
+                '"' + peersubnets + '" were not defined.')
+        else:
+            if len(subnet_list) == 1:
+
+                print_debug(debug, inspect.currentframe().f_code.co_name,
+                    inspect.currentframe().f_lineno, '"' + peersubnets
+                     + '": ' + str(subnet_list))
+
+                # leftsubnet/rightsubnet
+                conn_config[peer + 'subnet'] = subnet_list[0]
+            else:
+                # leftsubnets/rightsubnets
+                conn_config[peersubnets] = '{' + ', '.join(subnet_list) + '}'
+
+    # ikev2
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'Looking for --ikev1 vs --ikev2...')
+
+    # We don't need to check for --ikev2, it's the default here.
+    conn_config['ikev2'] = 'yes'
+
+    if args.ikev1:
+        conn_config['ikev2'] = 'no'
+
+    # encapsulation and enable-tcp
+    encap = check_member_string('encapsulate', args.encapsulate, ENCAPSULATE,
+                my_config)
+    if encap:
+        conn_config['encapsulate'] = encap
+
+    # sendca
+    sendca = check_member_string('sendca', args.sendca, SEND_CA_LEVELS,
+                my_config)
+    if sendca:
+        conn_config['sendca'] = sendca
+
+    # authby
+    authby = check_member_string('authby', args.authby, AUTH_METHODS,
+                my_config)
+    if authby:
+        conn_config['authby'] = authby
+
+    # pfs
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'Looking for --nopfs...')
+
+    if args.nopfs:
+        conn_config['pfs'] = 'no'
+
+    # auto
+    auto = check_member_string('auto', args.auto, AUTO, my_config)
+    if auto:
+        conn_config['auto'] = auto
+
+    # Done
+    print_debug(debug, inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'leaving')
+
+    return conn_config
+
+def main():
+    """ The main program """
+
+    parser = argparse.ArgumentParser(description='Create new connection \
+                                                  configuration file',
+                                     add_help=False,
+                                     allow_abbrev=True)
+
+    opts1 = parser.add_argument_group('Connection general parameters')
+    opts1.add_argument('-n', '--name',
+                            required=True,
+                            help='connection name')
+    opts1.add_argument('-t', '--type',
+                            help='type of connection ' + '{'
+                                  + '|'.join(CONN_TYPES) + '}')
+    opts1.add_argument('--auto',
+                            help='operation to perform at IPsec startup '
+                                  + '{' + '|'.join(AUTO) + '}')
+
+    opts2 = parser.add_argument_group('Protocol options')
+
+    ike_version = opts2.add_mutually_exclusive_group()
+    ike_version.add_argument('-v1', '--ikev1',
+                                action='store_true',
+                                help='use IKEv1')
+    ike_version.add_argument('-v2', '--ikev2',
+                                action='store_true',
+                                help='use IKEv2 (default)')
+
+    opts2.add_argument('--encapsulate',
+                           help='optionally, specify ESP encapsulation options'
+                                 + ' {' + '|'.join(ENCAPSULATE) + '}')
+
+    opts3 = parser.add_argument_group('Authentication/keying parameters')
+    authby = opts3.add_mutually_exclusive_group()
+    authby.add_argument('-a', '--authby',
+                            help='authentication method ' + '{'
+                                  + '|'.join(AUTH_METHODS) + '}')
+#    asynauth = authby.add_mutually_exclusive_group()
+#    asynauth.add_argument('-la', '--leftauth',
+#                                help='IKEv2 asymmetric authentication of \
+#                                the left peer')
+#    asynauth.add_argument('-ra', '--rightauth',
+#                                help='IKEv2 asymmetric authentication of \
+#                                the right peer')
+
+    opts3.add_argument('--ike',
+                            help='IKE encryption and authentication algorithms\
+                                 "cipher-hash;modpgroup", use multiple times \
+                                  to add more than one set',
+                            action='append')
+    opts3.add_argument('--esp',
+                            help='algorithms offered/accepted for \
+                                IPsec child SAs (phase 2) \
+                                "ENC-AUTH-PFSgroup", use multiple times to \
+                                add more than one set',
+                            action='append')
+    opts3.add_argument('--nopfs',
+                            help='disable Perfect Forward Secrecy of keys',
+                            action='store_true')
+
+    opts3.add_argument('--sendca',
+                            help='optionally, how many intermediate CA \
+                                  certificate levels to send with the end \
+                                  certificate ' +
+                                  '{' + '|'.join(SEND_CA_LEVELS) + '}')
+
+    leftopts = parser.add_argument_group('Left participant\'s specific \
+                                         options')
+
+    leftopts.add_argument('-l', '--left',
+                            help='IP address or DNS hostname of the left peer \
+                                  (e.g. public address of the local host)',
+                            required=True)
+    leftopts.add_argument('-lid', '--leftid',
+                            help='identification of the left peer')
+    leftopts.add_argument('-lnet', '--leftsubnet',
+                            help='private subnet(s) behind the left peer \
+                                 in CIDR notation, use multiple times \
+                                 to define multiple private subnets',
+                            action='append')
+    leftopts.add_argument('-lcert', '--leftcert',
+                            help='NSS database certificate nickname of the \
+                                 left peer')
+
+    rightopts = parser.add_argument_group('Right participant\'s specific'
+                                         + ' options')
+
+    rightopts.add_argument('-r', '--right',
+                            help='IP address or DNS hostname of the right peer \
+                                  (e.g. public address of the remote host)',
+                            required=True)
+    rightopts.add_argument('-rid', '--rightid',
+                            help='identification of the right peer')
+    rightopts.add_argument('-rnet', '--rightsubnet',
+                            help='private subnet behind the right peer \
+                                 in CIDR notation, use multiple times \
+                                 to define multiple private subnets',
+                            action='append')
+    rightopts.add_argument('-rcert', '--rightcert',
+                            help='NSS database certificate nickname of the \
+                                 right peer')
+
+    other = parser.add_argument_group('Other options')
+    other.add_argument('-h', '--help',
+                            action='help',
+                            help='show this help message and exit')
+    other.add_argument('-v', '--version',
+                            action='store_true',
+                            help='show version and exit')
+    ask = other.add_mutually_exclusive_group()
+    ask.add_argument('--no',
+                            action='store_true',
+                            help='don\'t ask for input (the answer is \
+                                  always "no")')
+    ask.add_argument('-y', '--yes',
+                            action='store_true',
+                            help='don\'t ask, assume "yes" to everything')
+    other.add_argument('-d', '--debug',
+                            action='store_true',
+                            help='show debugging')
+    other.add_argument('--nodns',
+                            action='store_true',
+                            help='do not validate values using DNS resolution')
+
+    args = parser.parse_args()
+
+    # Done parsing arguments, use them now.
+
+    # Program configuration dictionary
+    my_config = {
+        'debug': args.debug,
+        'prompt': not args.no,
+        'assume_yes': args.yes,
+        'dns': not args.nodns
+    }
+
+    if args.version:
+        print("version: 0.1")
+        sys.exit(0)
+
+    # Make the config from arguments
+    conn_config = make_config(args, my_config)
+
+    config_fname = CONFDIR + '/' + conn_config['name'].strip()
+    write_config(conn_config, config_fname, my_config)
+
+    print_debug(my_config['debug'], inspect.currentframe().f_code.co_name,
+        inspect.currentframe().f_lineno, 'done.')
+
+# We start here at the end
+
+if __name__ == "__main__":
+
+    # Ctrl-C trap
+    signal(SIGINT, handler)
+    # Ctrl-Z trap
+    signal(SIGTSTP, handler)
+    # Ctrl-| trap
+    signal(SIGQUIT, handler)
+
+    main()

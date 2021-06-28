@@ -14,7 +14,7 @@
 # XXX: Hack to suppress the man page.  Should one be added?
 PROGRAM_MANPAGE =
 
-PROGRAM=add
+PROGRAM=new
 
 ifdef top_srcdir
 include $(top_srcdir)/mk/program.mk
