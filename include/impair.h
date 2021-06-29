@@ -150,6 +150,9 @@ struct impair {
 	unsigned add_unknown_v2_payload_to_sk;
 	bool unknown_v2_payload_critical;
 
+	bool omit_v2_ike_auth_child;
+	bool ignore_v2_ike_auth_child;
+
 	/*
 	 * add more here
 	 */
@@ -164,7 +167,7 @@ extern struct impair impair;
 
 struct whack_impair {
 	unsigned what;
-	unsigned how;
+	unsigned biased_value;
 };
 
 enum impair_status {

@@ -186,15 +186,15 @@ kvmplutotest	ikev2-63-anyid-nat			good
 kvmplutotest	ikev2-64-same-route-twice		wip
 kvmplutotest	ikev2-67-parallel-sa			wip
 kvmplutotest	ikev2-67-esp-null-iperf			wip
-kvmplutotest	ikev2-70-src-address-selection		wip
-kvmplutotest	ikev2-71-cp-resolve-name		wip
-kvmplutotest 	ikev2-72-cp-resolve-both		wip
+kvmplutotest	ikev2-70-src-address-selection		good
+kvmplutotest	ikev2-71-cp-resolve-name		good
+kvmplutotest 	ikev2-72-cp-resolve-both		good
 
 kvmplutotest	ikev2-ikeport-02-initiator		good
 kvmplutotest	ikev2-ikeport-03-responder		good
 kvmplutotest	ikev2-ikeport-04-rw-nat-initiator	good
 kvmplutotest	ikev2-ikeport-05-rw-nat-responder	good
-kvmplutotest	ikev2-ikeport-06-host-to-host		wip
+kvmplutotest	ikev2-ikeport-06-host-to-host		good
 
 kvmplutotest	ikev2-24-cryptoload			wip
 kvmplutotest	ikev2-25-rw-nat				good
@@ -318,6 +318,7 @@ kvmplutotest	ikev2-impair-06-send-no-ike-ke		good
 kvmplutotest	ikev1-impair-07-send-empty-ike-ke	good
 kvmplutotest	ikev2-impair-07-send-empty-ike-ke	good
 kvmplutotest	ikev2-impair-08-ignore-reserved		good
+kvmplutotest	ikev2-impair-09-omit-first-child	good
 
 kvmplutotest	impair-08-ikev1-key-length-attribute	good
 kvmplutotest	impair-08-ikev2-key-length-attribute	good
@@ -360,7 +361,7 @@ kvmplutotest	ikev2-x509-01				good
 kvmplutotest	ikev2-x509-01-nss-debug			skiptest
 kvmplutotest	ikev2-x509-02-eku			good
 # smoketest will replace -eku test
-kvmplutotest	ikev2-x509-02-smoketest			wip
+kvmplutotest	ikev2-x509-02-smoketest			good
 kvmplutotest	ikev2-x509-03				good
 kvmplutotest	ikev2-x509-05-san-firstemail-match	good
 kvmplutotest	ikev2-x509-05-san-firstemail-match-responder	good
@@ -396,6 +397,7 @@ kvmplutotest	ikev2-x509-31-wifi-assist		wip
 kvmplutotest	ikev2-x509-31-wifi-assist-nonat		good
 kvmplutotest	ikev2-x509-38-failureshunt		good
 kvmplutotest	ikev2-x509-39-OU-comma			good
+kvmplutotest	ikev2-x509-40-dn-wildcard		good
 
 # wildcard ID related tests
 kvmplutotest	ikev1-x509-17-id-any			good
@@ -486,7 +488,7 @@ kvmplutotest	ikev2-44-switch-initiator-strongswan	good
 kvmplutotest	ikev2-frag-01				good
 kvmplutotest	ikev2-frag-02-ipv6			good
 kvmplutotest	ikev2-frag-03-retrans			good
-kvmplutotest	ikev2-frag-04-nofrag			wip
+kvmplutotest	ikev2-frag-04-nofrag			good
 
 kvmplutotest	dynamic-iface-01			good
 kvmplutotest	removed-iface-01			good
@@ -497,6 +499,7 @@ kvmplutotest	ikev2-replay-window			good
 kvmplutotest	interop-ikev2-strongswan-45-initiator-ecdsa-384		good
 kvmplutotest	interop-ikev2-strongswan-46-responder-ecdsa-384		good
 kvmplutotest	ikev2-x509-ecdsa-01			good
+kvmplutotest	ikev2-x509-ecdsa-02-mismatch		good
 
 # Opportunstic Encryption using AUTH NULL
 kvmplutotest	newoe-01-whack				good
@@ -551,9 +554,9 @@ kvmplutotest	newoe-18-private-copall			good
 kvmplutotest	newoe-18-private-pocall			good
 kvmplutotest 	newoe-19-poc-poc-clear			good
 kvmplutotest 	newoe-20-ipv6				good
-kvmplutotest 	newoe-21-liveness-clear			good
+kvmplutotest 	newoe-21-liveness-clear			wip
 kvmplutotest	newoe-22-nat-poc-cop			good
-kvmplutotest	newoe-24-poc-poc-fast			good
+kvmplutotest	newoe-24-poc-poc-fast			wip
 kvmplutotest	newoe-25-cat-1				good
 kvmplutotest	newoe-25-cat-2				good
 kvmplutotest	newoe-25-cat-3-4-way			good
@@ -687,10 +690,10 @@ kvmplutotest	ikev2-child-rekey-05		wip # it exists, wasnt in thelist?
 kvmplutotest	ikev2-child-rekey-06-deadlock	good
 kvmplutotest	ikev2-child-rekey-07-deadlock	good
 kvmplutotest	ikev2-child-rekey-08-deadlock	wip
-kvmplutotest	ikev2-child-rekey-09-windows	wip
-kvmplutotest	ikev2-child-rekey-10-impair-rekey-initiate-subnet	wip
-kvmplutotest	ikev2-child-rekey-10-impair-rekey-respond-supernet	wip
-kvmplutotest	ikev2-child-rekey-10-impair-rekey-respond-subnet	wip
+kvmplutotest	ikev2-child-rekey-09-windows	good
+kvmplutotest	ikev2-child-rekey-10-impair-rekey-initiate-subnet	good
+kvmplutotest	ikev2-child-rekey-10-impair-rekey-respond-supernet	good
+kvmplutotest	ikev2-child-rekey-10-impair-rekey-respond-subnet	good
 kvmplutotest	ikev2-child-dual-asym-01	good
 kvmplutotest	ikev2-ike-rekey-01		good
 kvmplutotest	ikev2-ike-rekey-02		good
@@ -716,7 +719,9 @@ kvmplutotest	ikev1-connswitch-ports-01	good
 kvmplutotest	ikev1-ikev2-connswitch-01	good
 kvmplutotest	ikev1-rekey-connswitch		good
 kvmplutotest	ikev2-connswitch-01		good
-kvmplutotest	ikev2-connswitch-02		wip
+kvmplutotest	ikev2-connswitch-02		good
+kvmplutotest	ikev2-connswitch-02-real-mismatch	good
+kvmplutotest	ikev2-connswitch-03		good
 
 #
 # a test of using X.509 keys
@@ -801,6 +806,7 @@ kvmplutotest	ikev1-xauth-30-retransmit-xchg-mode-cfg-request		good
 #
 kvmplutotest	aggr-pluto-01		good
 kvmplutotest	aggr-pluto-02		good
+kvmplutotest	aggr-pluto-03-dual-nat	good
 kvmplutotest	aggr-pluto-04		good
 
 # Various algo tests
@@ -829,6 +835,7 @@ kvmplutotest	pluto-rekey-02		good
 kvmplutotest	psk-pluto-03		good
 kvmplutotest	psk-pluto-04		good
 kvmplutotest	psk-pluto-05		good
+kvmplutotest	psk-pluto-06		good
 
 #
 # tests using alternative ESP algorithms
@@ -855,6 +862,10 @@ kvmplutotest    algo-pluto-14-aes_ctr	good
 kvmplutotest	multinet-01		good
 kvmplutotest	multinet-03		wip
 kvmplutotest	multinet-04		good
+kvmplutotest	ikev1-rw-multiple-subnets wip
+kvmplutotest	ikev2-rw-multiple-subnets wip
+kvmplutotest	ikev2-rw-multiple-subnets-2 wip
+kvmplutotest	ikev2-rw-multiple-subnets-3 wip
 
 # transport mode related tests
 kvmplutotest	ikev1-nat-transport-02		good
@@ -900,11 +911,14 @@ kvmplutotest	interop-ikev2-xfrmi-strongswan-01			good
 # Selinux / secure labeling tests
 kvmplutotest	ikev1-labeled-ipsec-01					wip
 kvmplutotest	ikev1-labeled-ipsec-02-mismatch				wip
-kvmplutotest	ikev1-labeled-ipsec-03-multi-acquires			good
-kvmplutotest	ikev2-labeled-ipsec-01					wip
-kvmplutotest	ikev2-labeled-ipsec-04-no-label				good
-kvmplutotest	ikev2-labeled-ipsec-03-multi-acquires			good
-kvmplutotest	ikev2-labeled-ipsec-03-multi-acquires-enforced		good
+kvmplutotest	ikev1-labeled-ipsec-03-multi-acquires			wip
+kvmplutotest	ikev2-labeled-ipsec-01					good
+kvmplutotest	ikev2-labeled-ipsec-01-childless			good
+kvmplutotest	ikev2-labeled-ipsec-03-multi-acquires			wip
+kvmplutotest	ikev2-labeled-ipsec-03-multi-acquires-enforced		wip
+kvmplutotest	ikev2-labeled-ipsec-04-no-label-on-initiator		good
+kvmplutotest	ikev2-labeled-ipsec-04-no-label-on-responder		good
+kvmplutotest	ikev2-labeled-ipsec-04-no-label-on-responder-acquire	good
 
 # compress tests
 kvmplutotest    compress-pluto-01		good
@@ -1203,6 +1217,12 @@ kvmplutotest	ikev2-tcp-02-timeout				wip
 kvmplutotest	ikev2-tcp-03-basic-rawrsa-blocking		good
 kvmplutotest	ikev2-tcp-03-basic-rawrsa-nonblocking		good
 kvmplutotest	ikev2-tcp-04-ikeport				wip
+kvmplutotest	ikev2-tcp-05-transport-mode			wip
+kvmplutotest	ikev2-tcp-06-fail-ike-sa-init-cookie		skiptest
+kvmplutotest	ikev2-tcp-06-fail-ike-sa-init-invalid-ke	skiptest
+kvmplutotest	ikev2-tcp-06-fail-ike-sa-init-redirect		wip
+kvmplutotest	ikev2-tcp-07-fail-ike-auth-authentication-failed	wip
+kvmplutotest	ikev2-tcp-07-fail-ike-auth-redirect		wip
 kvmplutotest	ikev2-tcp-10-rekey-child			good
 kvmplutotest	ikev2-tcp-10-rekey-ike				good
 kvmplutotest	ikev2-tcp-25-rw-nat				good
@@ -1210,18 +1230,26 @@ kvmplutotest	ikev2-tcp-26-rw-nat-keepalive			good
 kvmplutotest	ikev2-udp-05-transport-mode 			good
 
 # OpenBSD interop
-kvmplutotest	interop-ikev2-openbsd-01		skiptest
-kvmplutotest	interop-ikev2-openbsd-02		skiptest
+kvmplutotest	interop-ikev2-openbsd-01-iked-responder	good
+kvmplutotest	interop-ikev2-openbsd-02-iked-initiator	good
 
 # Intermediary Exchange
 kvmplutotest	ikev2-intermediate-01-rsa-sha1		good
 kvmplutotest	ikev2-intermediate-02-psk		good
 
 # VPN System Roles - skip automated testing for now
-kvmplutotest	ikev2-systemrole-01			skiptest
+kvmplutotest	ikev2-systemrole-01-host-to-host	good
+kvmplutotest	ikev2-systemrole-02-net-to-net		good
+kvmplutotest	ikev2-systemrole-03-certs		good
+kvmplutotest	ikev2-systemrole-04-mesh		good
 
 kvmplutotest	ikev1-policy-01-drop			good
 kvmplutotest	ikev1-policy-02-reject			good
 
 kvmplutotest	ikev2-revive-through-nat		good
 kvmplutotest	ikev2-revive-through-nat-02-cleanfail	good
+
+# crossing the stream race conditions
+kvmplutotest	ikev2-crossing-streams-01		good
+kvmplutotest	ikev2-crossing-streams-02		good
+kvmplutotest	ikev2-crossing-streams-03-iface		good

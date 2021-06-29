@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <limits.h> /* PATH_MAX */
+#include <errno.h>
 
 #include "sysdep.h"
 #include "constants.h"
@@ -39,8 +40,7 @@
 #include "whack.h"
 #include "ip_info.h"
 #include "ip_selector.h"
-
-#include <errno.h>
+#include "orient.h"
 
 /* Groups is a list of connections that are policy groups.
  * The list is updated as group connections are added and deleted.
@@ -74,11 +74,21 @@ struct fg_targets {
 
 static struct fg_targets *targets = NULL;
 
+/*
+ * An old target has disappeared for a group: delete instance.
+ */
+static void remove_group_instance(const struct connection *group,
+				  const char *name, struct logger *logger)
+{
+	passert(group->kind == CK_GROUP);
+	delete_connections_by_name(name, false, logger);
+}
+
 /* subnetcmp compares the two ip_subnet values a and b.
  * It returns -1, 0, or +1 if a is, respectively,
  * less than, equal to, or greater than b.
  */
-static int subnetcmp(const ip_selector *a, const ip_selector *b)
+static int subnetcmp(const ip_selector a, const ip_selector b)
 {
 	int r;
 
@@ -125,7 +135,7 @@ static void read_foodgroup(struct file_lex_position *oflp, struct fg_groups *g,
 		if (strchr(flp->tok, '/') == NULL) {
 			/* no /, so treat as /32 or V6 equivalent */
 			ip_address t;
-			err_t err = numeric_to_address(shunk1(flp->tok), NULL, &t);
+			err_t err = ttoaddress_num(shunk1(flp->tok), NULL, &t);
 			if (err != NULL) {
 				llog(RC_LOG_SERIOUS, flp->logger,
 					    "ignored, '%s' is not an address: %s",
@@ -133,7 +143,7 @@ static void read_foodgroup(struct file_lex_position *oflp, struct fg_groups *g,
 				flushline(flp, NULL/*shh*/);
 				continue;
 			}
-			sn = selector_from_address(&t);
+			sn = selector_from_address(t);
 		} else {
 			const struct ip_info *afi = strchr(flp->tok, ':') == NULL ? &ipv4_info : &ipv6_info;
 			ip_subnet snn;
@@ -145,7 +155,7 @@ static void read_foodgroup(struct file_lex_position *oflp, struct fg_groups *g,
 				flushline(flp, NULL/*shh*/);
 				continue;
 			}
-			sn = selector_from_subnet(&snn);
+			sn = selector_from_subnet(snn);
 		}
 
 		const struct ip_info *type = selector_type(&sn);
@@ -225,10 +235,9 @@ static void read_foodgroup(struct file_lex_position *oflp, struct fg_groups *g,
 				r = -1; /* end of list is infinite */
 				break;
 			}
-			r = subnetcmp(lsn,
-				      &(*pp)->group->connection->spd.this.client);
+			r = subnetcmp(*lsn, (*pp)->group->connection->spd.this.client);
 			if (r == 0) {
-				r = subnetcmp(&sn, &(*pp)->subnet);
+				r = subnetcmp(sn, (*pp)->subnet);
 			}
 			if (r != 0)
 				break;
@@ -335,10 +344,10 @@ void load_groups(struct logger *logger)
 				r = -1; /* no more new; next is old */
 			}
 			if (r == 0)
-				r = subnetcmp(&op->group->connection->spd.this.client,
-					      &np->group->connection->spd.this.client);
+				r = subnetcmp(op->group->connection->spd.this.client,
+					      np->group->connection->spd.this.client);
 			if (r == 0)
-				r = subnetcmp(&op->subnet, &np->subnet);
+				r = subnetcmp(op->subnet, np->subnet);
 			if (r == 0)
 				r = op->proto - np->proto;
 			if (r == 0)
@@ -359,7 +368,7 @@ void load_groups(struct logger *logger)
 				/* note: r>=0 || r<= 0: following cases overlap! */
 				if (r <= 0) {
 					remove_group_instance(op->group->connection,
-							      op->name);
+							      op->name, logger);
 					/* free old */
 					*opp = op->next;
 					pfree_target(&op);
@@ -368,7 +377,7 @@ void load_groups(struct logger *logger)
 					struct connection *g = np->group->connection;
 					/* XXX: something better? */
 					close_any(&g->logger->global_whackfd);
-					g->logger->global_whackfd = dup_any(logger->global_whackfd);
+					g->logger->global_whackfd = fd_dup(logger->global_whackfd, HERE);
 					struct connection *ng = add_group_instance(g, &np->subnet, np->proto,
 										   np->sport, np->dport);
 					/* XXX: something better? */
@@ -488,7 +497,7 @@ void delete_group(const struct connection *c)
 				/* remove *PP but advance first */
 				*pp = t->next;
 				remove_group_instance(t->group->connection,
-						      t->name);
+						      t->name, c->logger);
 				pfree_target(&t);
 				/* pp is ready for next iteration */
 			} else {

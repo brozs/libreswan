@@ -92,7 +92,7 @@ static bool v2_out_attr_variable(struct pbs_out *pbs,
 	if (!pexpect(out_struct(&attr, &ikev2_trans_attr_desc, pbs, NULL))) {
 		return false;
 	}
-	if (!pexpect(pbs_out_hunk(chunk, pbs, "attribute value"))) {
+	if (!pexpect(out_hunk(chunk, pbs, "attribute value"))) {
 		return false;
 	}
 	return true;
@@ -333,13 +333,9 @@ static void jam_v2_proposal(struct jambuf *buf, int propnum,
 		}
 	}
 	if (proposal->remote_spi.size > 0) {
-		pexpect(proposal->remote_spi.size <= sizeof(proposal->remote_spi.size));
+		passert(proposal->remote_spi.size <= sizeof(proposal->remote_spi.bytes));
 		jam_string(buf, " SPI=");
-		size_t i;
-		for (i = 0; i < proposal->remote_spi.size &&
-			    i < sizeof(proposal->remote_spi.size); i++) {
-			jam(buf, "%02x", proposal->remote_spi.bytes[i]);
-		}
+		jam_hex_bytes(buf, proposal->remote_spi.bytes, proposal->remote_spi.size);
 	}
 }
 
@@ -486,14 +482,14 @@ static int process_transforms(pb_stream *prop_pbs, struct jambuf *remote_jam_buf
 					 &remote_trans, sizeof(remote_trans),
 					 &trans_pbs);
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d,
+			llog_diag(RC_LOG, logger, &d,
 				 "remote proposal %u transform %d is corrupt",
 				 remote_propnum, remote_transform_nr);
 			jam_string(remote_jam_buf, "[corrupt-transform]");
 			return -(STF_FAIL + v2N_INVALID_SYNTAX); /* bail */
 		}
 
-		/* ignore unknown transform types.  */
+		/* ignore unknown transform types. */
 		if (remote_trans.isat_type == 0) {
 			return -(STF_FAIL + v2N_INVALID_SYNTAX);
 		}
@@ -514,7 +510,7 @@ static int process_transforms(pb_stream *prop_pbs, struct jambuf *remote_jam_buf
 			diag_t d = pbs_in_struct(&trans_pbs, &ikev2_trans_attr_desc,
 						 &attr, sizeof(attr), &attr_pbs);
 			if (d != NULL) {
-				log_diag(RC_LOG, logger, &d,
+				llog_diag(RC_LOG, logger, &d,
 					 "remote proposal %u transform %d contains corrupt attribute",
 					 remote_propnum, remote_transform_nr);
 				jam_string(remote_jam_buf, "[corrupt-attribute]");
@@ -911,7 +907,7 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 					 &remote_proposal, sizeof(remote_proposal),
 					 &proposal_pbs);
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "proposal %d corrupt", next_propnum);
+			llog_diag(RC_LOG, logger, &d, "proposal %d corrupt", next_propnum);
 			jam_string(remote_jam_buf, " [corrupt-proposal]");
 			matching_local_propnum = -(STF_FAIL + v2N_INVALID_SYNTAX);
 			break;
@@ -935,7 +931,7 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 		 * accepted.
 		 */
 		if (expect_accepted) {
-			/* There can be only one accepted proposal.  */
+			/* There can be only one accepted proposal. */
 			if (remote_proposal.isap_lp != v2_PROPOSAL_LAST) {
 				llog(RC_LOG, logger, "Error: more than one accepted proposal received.");
 				jam_string(remote_jam_buf, "[too-many-accepted-proposals]");
@@ -996,7 +992,7 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 		 * size, in octets, of the SPI of the corresponding
 		 * protocol (8 for IKE, 4 for ESP and AH).
 		 */
-		/* Read any SPI.  */
+		/* Read any SPI. */
 		struct ikev2_spi remote_spi = {
 			.size = (expect_spi ? proto_spi_size(remote_proposal.isap_protoid) : 0),
 		};
@@ -1012,7 +1008,7 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 		if (remote_spi.size > 0) {
 			diag_t d = pbs_in_raw(&proposal_pbs, remote_spi.bytes, remote_spi.size, "remote SPI");
 			if (d != NULL) {
-				log_diag(RC_LOG, logger, &d, "proposal %d contains corrupt SPI",
+				llog_diag(RC_LOG, logger, &d, "proposal %d contains corrupt SPI",
 					 remote_proposal.isap_propnum);
 				matching_local_propnum = -(STF_FAIL + v2N_INVALID_SYNTAX);
 				jam_string(remote_jam_buf, "[corrupt-spi]");
@@ -1057,7 +1053,7 @@ static int ikev2_process_proposals(pb_stream *sa_payload,
 				/* second or further match */
 				jam_string(remote_jam_buf, "[better-match]");
 			}
-			/* capture the new best proposal  */
+			/* capture the new best proposal */
 			matching_local_propnum = match;
 			/* blat best with a new value */
 			*best_proposal = (struct ikev2_proposal) {
@@ -1245,7 +1241,7 @@ static bool emit_transform_header(struct pbs_out *proposal_pbs,
 	diag_t d = pbs_out_struct(proposal_pbs, &ikev2_trans_desc,
 				  &trans, sizeof(trans), transform_pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, proposal_pbs->outs_logger, &d,
+		llog_diag(RC_LOG_SERIOUS, proposal_pbs->outs_logger, &d,
 			 "out_struct() of transform failed: ");
 		return false;
 	}
@@ -1271,7 +1267,7 @@ static bool emit_transform_attributes(struct pbs_out *transform_pbs,
 				return false;
 			}
 		}
-	} else  {
+	} else {
 		switch (impair_key_length_attribute) {
 		case IMPAIR_EMIT_NO:
 			PASSERT_FAIL("%s", "should have been handled");
@@ -1520,7 +1516,7 @@ static bool emit_proposal(struct pbs_out *sa_pbs,
 	if (local_spi != NULL) {
 		pexpect(local_spi->len > 0);
 		pexpect(local_spi->len == proto_spi_size(proposal->protoid));
-		if (!pbs_out_hunk(*local_spi, &proposal_pbs, "our spi"))
+		if (!out_hunk(*local_spi, &proposal_pbs, "our spi"))
 			return FALSE;
 	}
 
@@ -1738,7 +1734,9 @@ bool ikev2_proposal_to_proto_info(const struct ikev2_proposal *proposal,
 	/*
 	 * Start with ZERO for everything.
 	 */
-	pexpect(sizeof(proto_info->attrs.spi) == proposal->remote_spi.size);
+	if (!pexpect(sizeof(proto_info->attrs.spi) == proposal->remote_spi.size))
+		return false;
+
 	memcpy(&proto_info->attrs.spi, proposal->remote_spi.bytes,
 	       sizeof(proto_info->attrs.spi));
 

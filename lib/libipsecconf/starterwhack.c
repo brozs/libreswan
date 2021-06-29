@@ -287,7 +287,7 @@ static char *connection_name(const struct starter_conn *conn)
 	}
 }
 
-static void set_whack_end(char *lr,
+static bool set_whack_end(char *lr,
 			struct whack_end *w,
 			const struct starter_end *l)
 {
@@ -305,24 +305,23 @@ static void set_whack_end(char *lr,
 	case KH_DEFAULTROUTE:
 	case KH_IPHOSTNAME:
 		/* note: we always copy the name string below */
-		w->host_addr = address_any(l->host_family);
+		w->host_addr = l->host_family->address.any;
 		break;
 
 	case KH_OPPO:
 	case KH_GROUP:
 	case KH_OPPOGROUP:
 		/* policy should have been set to OPPO */
-		w->host_addr = address_any(l->host_family);
+		w->host_addr = l->host_family->address.any;
 		break;
 
 	case KH_ANY:
-		w->host_addr = address_any(l->host_family);
+		w->host_addr = l->host_family->address.any;
 		break;
 
 	default:
-		printf("%s: do something with host case: %d\n", lr,
-			l->addrtype);
-		break;
+		printf("Failed to load connection %s= is not set\n", lr);
+		return false;
 	}
 	w->host_addr_name = l->strings[KSCF_IP];
 
@@ -337,7 +336,7 @@ static void set_whack_end(char *lr,
 		 * but, get the family set up right
 		 * XXX the nexthop type has to get into the whack message!
 		 */
-		w->host_nexthop = address_any(l->host_family);
+		w->host_nexthop = l->host_family->address.any;
 		break;
 
 	default:
@@ -346,13 +345,13 @@ static void set_whack_end(char *lr,
 		break;
 	}
 
-	if (address_is_specified(&l->sourceip))
+	if (address_is_specified(l->sourceip))
 		w->host_srcip = l->sourceip;
 
-	if (cidr_is_specified(&l->vti_ip))
+	if (cidr_is_specified(l->vti_ip))
 		w->host_vtiip = l->vti_ip;
 
-	if (cidr_is_specified(&l->ifaceip))
+	if (cidr_is_specified(l->ifaceip))
 		w->ifaceip = l->ifaceip;
 
 	w->has_client = l->has_client;
@@ -412,6 +411,7 @@ static void set_whack_end(char *lr,
 	if (l->options_set[KNCF_CAT])
 		w->cat = l->options[KNCF_CAT];
 	w->pool_range = l->pool_range;
+	return true;
 }
 
 static int starter_whack_add_pubkey(struct starter_config *cfg,
@@ -658,8 +658,10 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 	if (conn->options_set[KNCF_XAUTHFAIL])
 		msg.xauthfail = conn->options[KNCF_XAUTHFAIL];
 
-	set_whack_end("left",  &msg.left, &conn->left);
-	set_whack_end("right", &msg.right, &conn->right);
+	if (!set_whack_end("left",  &msg.left, &conn->left))
+		return -1;
+	if (!set_whack_end("right", &msg.right, &conn->right))
+		return -1;
 
 	msg.esp = conn->esp;
 	conn_log_val(conn, "esp", msg.esp);

@@ -21,52 +21,38 @@
 
 const ip_sockaddr unset_sockaddr;
 
-err_t sockaddr_to_endpoint(const struct ip_protocol *protocol,
-			   const ip_sockaddr *sa, ip_endpoint *e)
+err_t sockaddr_to_address_port(const ip_sockaddr sa, ip_address *address, ip_port *port)
 {
+	/* always clear; both are optional */
+	if (address != NULL) {
+		*address = unset_address;
+	}
+	if (port != NULL) {
+		*port = unset_port;
+	}
+
 	/* paranoia from demux.c */
 	socklen_t min_len = offsetof(struct sockaddr, sa_family) + sizeof(sa_family_t);
-	if (sa->len < min_len) {
-		*e = unset_endpoint;
+	if (sa.len < min_len) {
 		return "truncated";
 	}
 
-	/*
-	 * The text used in the below errors originated in demux.c.
-	 *
-	 * XXX: While af_info seems useful, trying to make it work
-	 * here resulted in convoluted over-engineering.  Instead
-	 * ensure these code paths work using testing.
-	 */
-	ip_address address;
-	ip_port port;
-	switch (sa->sa.sa.sa_family) {
-	case AF_INET:
-	{
-		/* XXX: to strict? */
-		if (sa->len != sizeof(sa->sa.sin)) {
-			return "wrong length";
-		}
-		address = address_from_in_addr(&sa->sa.sin.sin_addr);
-		port = ip_nport(sa->sa.sin.sin_port);
-		break;
+	const struct ip_info *afi = aftoinfo(sa.sa.sa.sa_family);
+	if (afi == NULL) {
+		return "unexpected address family";
 	}
-	case AF_INET6:
-	{
-		/* XXX: to strict? */
-		if (sa->len != sizeof(sa->sa.sin6)) {
-			return "wrong length";
-		}
-		address = address_from_in6_addr(&sa->sa.sin6.sin6_addr);
-		port = ip_nport(sa->sa.sin6.sin6_port);
-		break;
+	if (sa.len != afi->sockaddr_size) {
+		return "wrong length";
 	}
-	case AF_UNSPEC:
-		return "unspecified";
-	default:
-		return "unexpected Address Family";
+
+	if (address != NULL) {
+		*address = afi->address_from_sockaddr(sa);
 	}
-	*e = endpoint_from_address_protocol_port(&address, protocol, port);
+
+	if (port != NULL) {
+		*port = afi->port_from_sockaddr(sa);
+	}
+
 	return NULL;
 }
 
@@ -74,14 +60,14 @@ err_t sockaddr_to_endpoint(const struct ip_protocol *protocol,
  * Construct and return a sockaddr structure.
  */
 
-static ip_sockaddr sockaddr_from_address_port(const ip_address *address, ip_port port)
+ip_sockaddr sockaddr_from_address_port(const ip_address address, ip_port port)
 {
-	if (address_is_unset(address)) {
+	if (address_is_unset(&address)) {
 		return unset_sockaddr;
 	}
 
-	const struct ip_info *afi = address_type(address);
-	shunk_t src_addr = address_as_shunk(address);
+	const struct ip_info *afi = address_type(&address);
+	shunk_t src_addr = address_as_shunk(&address);
 	chunk_t dst_addr;
 	ip_sockaddr sa = unset_sockaddr;
 
@@ -113,18 +99,17 @@ static ip_sockaddr sockaddr_from_address_port(const ip_address *address, ip_port
 	return sa;
 }
 
-ip_sockaddr sockaddr_from_address(const ip_address *address)
+ip_sockaddr sockaddr_from_address(const ip_address address)
 {
 	return sockaddr_from_address_port(address, unset_port);
 }
 
-ip_sockaddr sockaddr_from_endpoint(const ip_endpoint *endpoint)
+ip_sockaddr sockaddr_from_endpoint(const ip_endpoint endpoint)
 {
-	if (endpoint_is_unset(endpoint)) {
+	if (endpoint_is_unset(&endpoint)) {
 		return unset_sockaddr;
 	}
 
-	ip_address address = endpoint_address(endpoint);
-	ip_port port = endpoint_port(endpoint);
-	return sockaddr_from_address_port(&address, port);
+	return sockaddr_from_address_port(endpoint_address(endpoint),
+					  endpoint_port(endpoint));
 }

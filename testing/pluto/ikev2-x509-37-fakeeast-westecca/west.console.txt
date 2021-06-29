@@ -16,7 +16,7 @@ pk12util: PKCS12 IMPORT SUCCESSFUL
 west #
  # confirm that the network is alive
 west #
- ../../pluto/bin/wait-until-alive -I 192.0.1.254 192.0.2.254
+ ../../guestbin/wait-until-alive -I 192.0.1.254 192.0.2.254
 destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  # ensure that clear text does not get through
@@ -27,13 +27,13 @@ west #
 west #
  # confirm clear text does not get through
 west #
- ../../pluto/bin/ping-once.sh --down -I 192.0.1.254 192.0.2.254
+ ../../guestbin/ping-once.sh --down -I 192.0.1.254 192.0.2.254
 down
 west #
  ipsec start
 Redirecting to: [initsystem]
 west #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 west #
  ipsec auto --add ikev2-westnet-eastnet-x509-cr
 002 "ikev2-westnet-eastnet-x509-cr": added IKEv2 connection
@@ -50,12 +50,15 @@ west #
 003 "ikev2-westnet-eastnet-x509-cr" #1: certificate E=user-east@testing.libreswan.org,CN=east.testing.libreswan.org,OU=Test Department,O=Libreswan,L=Toronto,ST=Ontario,C=CA failed IPsec verification
 003 "ikev2-westnet-eastnet-x509-cr" #1: NSS ERROR: Peer's Certificate issuer is not recognized.
 002 "ikev2-westnet-eastnet-x509-cr" #1: X509: certificate payload rejected for this connection
-036 "ikev2-westnet-eastnet-x509-cr" #2: encountered fatal error in state STATE_PARENT_I2
+036 "ikev2-westnet-eastnet-x509-cr" #1: encountered fatal error in state STATE_PARENT_I2
+002 "ikev2-westnet-eastnet-x509-cr" #1: deleting other state #2 (STATE_V2_IKE_AUTH_CHILD_I0) and NOT sending notification
+002 "ikev2-westnet-eastnet-x509-cr" #1: deleting state (STATE_PARENT_I2) and NOT sending notification
+002 "ikev2-westnet-eastnet-x509-cr" #1: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
 west #
  echo "done"
 done
 west #
- ../../pluto/bin/ipsec-look.sh
+ ../../guestbin/ipsec-look.sh
 west NOW
 XFRM state:
 src 192.1.2.23 dst 192.1.2.45
@@ -76,9 +79,5 @@ Certificate Nickname                                         Trust Attributes
                                                              SSL,S/MIME,JAR/XPI
 mainec                                                       u,u,u
 west                                                         u,u,u
-west #
- ../bin/check-for-core.sh
-west #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 west #
  

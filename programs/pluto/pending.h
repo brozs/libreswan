@@ -23,6 +23,11 @@
 
 #include "monotime.h"
 #include "fd.h"
+#include "lset.h"
+#include "chunk.h"
+
+struct state;
+struct show;
 
 /*
  * struct pending, the structure representing IPsec SA negotiations
@@ -39,7 +44,7 @@ struct pending {
 	so_serial_t replacing;
 	monotime_t pend_time;
 	bool part_of_initiate;
-	chunk_t sec_label;
+	shunk_t sec_label;
 	struct pending *next;
 };
 
@@ -49,7 +54,7 @@ void add_pending(struct fd *whack_sock,
 		 lset_t policy,
 		 unsigned long try,
 		 so_serial_t replacing,
-		 chunk_t sec_label,
+		 shunk_t sec_label,
 		 bool part_of_initiate);
 
 void unpend(struct ike_sa *ike, struct connection *cc);
@@ -60,9 +65,9 @@ void flush_pending_by_connection(const struct connection *c);
 void flush_pending_by_state(struct ike_sa *ike);
 
 bool connection_is_pending(const struct connection *c);
-void show_pending_phase2(struct show *s,
-			 const struct connection *c,
-			 const struct ike_sa *ike);
+void show_pending_child_details(struct show *s,
+				const struct connection *c,
+				const struct ike_sa *ike);
 bool pending_check_timeout(const struct connection *c);
 
 extern struct connection *first_pending(const struct ike_sa *ike,

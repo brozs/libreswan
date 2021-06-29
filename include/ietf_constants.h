@@ -1117,13 +1117,15 @@ enum ikev1_ipsec_attr {
 
 /* Encapsulation Mode attribute */
 
-#define ENCAPSULATION_MODE_UNSPECIFIED 0 /* not legal -- used internally */
-#define ENCAPSULATION_MODE_TUNNEL 1
-#define ENCAPSULATION_MODE_TRANSPORT 2
-#define ENCAPSULATION_MODE_UDP_TUNNEL_RFC 3
-#define ENCAPSULATION_MODE_UDP_TRANSPORT_RFC 4
-#define ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS 61443
-#define ENCAPSULATION_MODE_UDP_TRANSPORT_DRAFTS 61444
+enum encapsulation_mode {
+	ENCAPSULATION_MODE_UNSPECIFIED = 0,	/* not legal -- used internally */
+	ENCAPSULATION_MODE_TUNNEL = 1,
+	ENCAPSULATION_MODE_TRANSPORT = 2,
+	ENCAPSULATION_MODE_UDP_TUNNEL_RFC = 3,
+	ENCAPSULATION_MODE_UDP_TRANSPORT_RFC = 4,
+	ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS = 61443,
+	ENCAPSULATION_MODE_UDP_TRANSPORT_DRAFTS = 61444,
+};
 
 /* Auth Algorithm attribute */
 /* https://www.iana.org/assignments/isakmp-registry/isakmp-registry.xml#isakmp-registry-20 */
@@ -1196,7 +1198,7 @@ typedef uint16_t ipsec_auth_t;
 
 enum ikev1_encr_attribute  {
 	OAKLEY_DES_CBC = 1,
-	OAKLEY_IDEA_CBC  = 2,
+	OAKLEY_IDEA_CBC = 2,
 	OAKLEY_BLOWFISH_CBC = 3,
 	OAKLEY_RC5_R16_B64_CBC = 4,
 	OAKLEY_3DES_CBC = 5,
@@ -1316,7 +1318,7 @@ enum ikev2_cp_attribute_type {
 	IKEv2_RESERVED_9 = 9,
 	IKEv2_INTERNAL_IP6_DNS = 10,
 	IKEv2_RESERVED_11 = 11,
-	IKEv2_INTERNAL_IP6_DHCP  =12,
+	IKEv2_INTERNAL_IP6_DHCP = 12,
 	IKEv2_INTERNAL_IP4_SUBNET = 13,
 	IKEv2_SUPPORTED_ATTRIBUTES = 14,
 	IKEv2_INTERNAL_IP6_SUBNET = 15,
@@ -1676,7 +1678,7 @@ enum ike_id_type {
 	ID_IPV4_ADDR = 1,
 	ID_FQDN = 2,
 	ID_USER_FQDN = 3,
-	ID_RFC822_ADDR  = ID_USER_FQDN,	/* alias */
+	ID_RFC822_ADDR = ID_USER_FQDN,	/* alias */
 	ID_IPV4_ADDR_SUBNET = 4,	/* XXX IKEv1 only but we use it */
 	ID_IPV6_ADDR = 5,
 	ID_IPV6_ADDR_SUBNET = 6,	/* XXX IKEv1 only but we use it */
@@ -1691,6 +1693,10 @@ enum ike_id_type {
 	/* 14-248 Unassigned */
 	/* 249-255 Reserved for private use */
 };
+
+extern const struct enum_names ike_id_type_names; /* all */
+extern const struct enum_names ikev1_ike_id_type_names;
+extern const struct enum_names ikev2_ike_id_type_names;
 
 /*
  * Certificate type values

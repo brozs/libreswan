@@ -850,9 +850,9 @@ struct family {
 	const struct ip_info *type;
 };
 
-static err_t opt_numeric_to_address(struct family *family, ip_address *address)
+static err_t opt_ttoaddress_num(struct family *family, ip_address *address)
 {
-	err_t err = numeric_to_address(shunk1(optarg), family->type, address);
+	err_t err = ttoaddress_num(shunk1(optarg), family->type, address);
 	if (err == NULL && family->type == NULL) {
 		family->type = address_type(address);
 		family->used_by = long_opts[long_index].name;
@@ -860,9 +860,9 @@ static err_t opt_numeric_to_address(struct family *family, ip_address *address)
 	return err;
 }
 
-static err_t opt_domain_to_address(struct family *family, ip_address *address)
+static err_t opt_ttoaddress_dns(struct family *family, ip_address *address)
 {
-	err_t err = domain_to_address(shunk1(optarg), family->type, address);
+	err_t err = ttoaddress_dns(shunk1(optarg), family->type, address);
 	if (err == NULL && family->type == NULL) {
 		family->type = address_type(address);
 		family->used_by = long_opts[long_index].name;
@@ -872,10 +872,10 @@ static err_t opt_domain_to_address(struct family *family, ip_address *address)
 
 static void opt_to_address(struct family *family, ip_address *address)
 {
-	diagq(opt_domain_to_address(family, address), optarg);
+	diagq(opt_ttoaddress_dns(family, address), optarg);
 }
 
-static ip_address any_address(struct family *family)
+static ip_address get_address_any(struct family *family)
 {
 	if (family->type == NULL) {
 		family->type = &ipv4_info;
@@ -886,7 +886,7 @@ static ip_address any_address(struct family *family)
 
 struct sockaddr_un ctl_addr = {
 	.sun_family = AF_UNIX,
-	.sun_path   = DEFAULT_CTL_SOCKET,
+	.sun_path  = DEFAULT_CTL_SOCKET,
 #if defined(HAS_SUN_LEN)
 	.sun_len = sizeof(struct sockaddr_un),
 #endif
@@ -934,9 +934,8 @@ static void check_end(struct whack_end *this, struct whack_end *that,
 		if (taf != subnet_type(&this->client))
 			diag("address family of client subnet inconsistent");
 	} else {
-		/* fill in anyaddr-anyaddr as (missing) client subnet */
-		ip_address cn = any_address(caf);
-		diagq(rangetosubnet(&cn, &cn, &this->client), NULL);
+		/* fill in anyaddr-anyaddr aka ::/128 as (missing) client subnet */
+		this->client = unset_subnet;
 	}
 
 	/* check protocol */
@@ -1349,7 +1348,7 @@ int main(int argc, char **argv)
 			msg.whack_delete = TRUE;
 			continue;
 
-		case OPT_DELETEID: /* --deleteid  --name <id> */
+		case OPT_DELETEID: /* --deleteid --name <id> */
 			msg.whack_deleteid = TRUE;
 			continue;
 
@@ -1361,7 +1360,7 @@ int main(int argc, char **argv)
 		case OPT_DELETECRASH:	/* --crash <ip-address> */
 			msg.whack_crash = true;
 			opt_to_address(&host_family, &msg.whack_crash_peer);
-			if (address_is_any(&msg.whack_crash_peer)) {
+			if (address_is_any(msg.whack_crash_peer)) {
 				diagq("0.0.0.0 or 0::0 isn't a valid client address",
 				      optarg);
 			}
@@ -1499,10 +1498,11 @@ int main(int argc, char **argv)
 
 		case OPT_OPPO_HERE:	/* --oppohere <ip-address> */
 			tunnel_af_used_by = long_opts[long_index].name;
-			diagq(ttoaddr(optarg, 0, msg.tunnel_addr_family,
-				      &msg.oppo.local.address), optarg);
+			diagq(ttoaddress_dns(shunk1(optarg),
+					     aftoinfo(msg.tunnel_addr_family),
+					     &msg.oppo.local.address), optarg);
 			if (address_is_unset(&msg.oppo.local.address) ||
-			    address_is_any(&msg.oppo.local.address)) {
+			    address_is_any(msg.oppo.local.address)) {
 				diagq("0.0.0.0 or 0::0 isn't a valid client address",
 				      optarg);
 			}
@@ -1510,10 +1510,11 @@ int main(int argc, char **argv)
 
 		case OPT_OPPO_THERE:	/* --oppothere <ip-address> */
 			tunnel_af_used_by = long_opts[long_index].name;
-			diagq(ttoaddr(optarg, 0, msg.tunnel_addr_family,
-				      &msg.oppo.remote.address), optarg);
+			diagq(ttoaddress_dns(shunk1(optarg),
+					     aftoinfo(msg.tunnel_addr_family),
+					     &msg.oppo.remote.address), optarg);
 			if (address_is_unset(&msg.oppo.remote.address) ||
-			    address_is_any(&msg.oppo.remote.address)) {
+			    address_is_any(msg.oppo.remote.address)) {
 				diagq("0.0.0.0 or 0::0 isn't a valid client address",
 				      optarg);
 			}
@@ -1538,10 +1539,9 @@ int main(int argc, char **argv)
 		/* List options */
 
 		case LST_UTC:	/* --utc */
-			msg.whack_utc = TRUE;
+			msg.whack_utc = true;
 			continue;
 
-		case LST_PUBKEYS:	/* --listpubkeys */
 		case LST_CERTS:	/* --listcerts */
 		case LST_CACERTS:	/* --listcacerts */
 		case LST_CRLS:	/* --listcrls */
@@ -1551,14 +1551,19 @@ int main(int argc, char **argv)
 			ignore_errors = TRUE;
 			continue;
 
+		case LST_PUBKEYS:	/* --listpubkeys */
+			msg.whack_listpubkeys = true;
+			ignore_errors = true;
+			continue;
+
 		case LST_CHECKPUBKEYS:	/* --checkpubkeys */
-			msg.whack_list |= LELEM(LST_PUBKEYS - LST_PUBKEYS);
-			msg.whack_check_pub_keys = TRUE;
-			ignore_errors = TRUE;
+			msg.whack_checkpubkeys = true;
+			ignore_errors = true;
 			continue;
 
 		case LST_ALL:	/* --listall */
 			msg.whack_list = LIST_ALL;
+			msg.whack_listpubkeys = true;
 			ignore_errors = TRUE;
 			continue;
 
@@ -1569,22 +1574,22 @@ int main(int argc, char **argv)
 			lset_t new_policy;
 			if (streq(optarg, "%any")) {
 				new_policy = LEMPTY;
-				msg.right.host_addr = any_address(&host_family);
+				msg.right.host_addr = get_address_any(&host_family);
 			} else if (streq(optarg, "%opportunistic")) {
 				/* always use tunnel mode; mark as opportunistic */
 				new_policy = POLICY_TUNNEL | POLICY_OPPORTUNISTIC;
-				msg.right.host_addr = any_address(&host_family);
+				msg.right.host_addr = get_address_any(&host_family);
 			} else if (streq(optarg, "%group")) {
 				/* always use tunnel mode; mark as group */
 				new_policy = POLICY_TUNNEL | POLICY_GROUP;
-				msg.right.host_addr = any_address(&host_family);
+				msg.right.host_addr = get_address_any(&host_family);
 			} else if (streq(optarg, "%opportunisticgroup")) {
 				/* always use tunnel mode; mark as opportunistic */
 				new_policy = POLICY_TUNNEL | POLICY_OPPORTUNISTIC | POLICY_GROUP;
-				msg.right.host_addr = any_address(&host_family);
+				msg.right.host_addr = get_address_any(&host_family);
 			} else if (msg.left.id != NULL && !streq(optarg, "%null")) {
 				new_policy = LEMPTY;
-				if (opt_numeric_to_address(&host_family, &msg.right.host_addr) == NULL) {
+				if (opt_ttoaddress_num(&host_family, &msg.right.host_addr) == NULL) {
 					/*
 					 * we have a proper numeric IP
 					 * address.
@@ -1597,7 +1602,7 @@ int main(int argc, char **argv)
 					 * the syntax.
 					 */
 					msg.dnshostname = optarg;
-					opt_domain_to_address(&host_family, &msg.right.host_addr);
+					opt_ttoaddress_dns(&host_family, &msg.right.host_addr);
 					/*
 					 * we don't fail here.  pluto
 					 * will re-check the DNS later
@@ -1689,7 +1694,7 @@ int main(int argc, char **argv)
 
 		case END_NEXTHOP:	/* --nexthop <ip-address> */
 			if (streq(optarg, "%direct")) {
-				msg.right.host_nexthop = any_address(&host_family);
+				msg.right.host_nexthop = get_address_any(&host_family);
 			} else {
 				opt_to_address(&host_family, &msg.right.host_nexthop);
 			}
@@ -2045,7 +2050,7 @@ int main(int argc, char **argv)
 			msg.esp = optarg;
 			continue;
 
-		case CD_REMOTEPEERTYPE:	/* --remote-peer-type  <cisco> */
+		case CD_REMOTEPEERTYPE:	/* --remote-peer-type <cisco> */
 			if (streq(optarg, "cisco"))
 				msg.remotepeertype = CISCO;
 			else
@@ -2590,7 +2595,7 @@ int main(int argc, char **argv)
 		if (!LHAS(opts1_seen, OPT_NAME))
 			diag("missing --name <connection_name>");
 	} else if (msg.whack_options == LEMPTY) {
-		if (LHAS(opts1_seen, OPT_NAME)  && !LELEM(OPT_TRAFFIC_STATUS))
+		if (LHAS(opts1_seen, OPT_NAME) && !LELEM(OPT_TRAFFIC_STATUS))
 			diag("no reason for --name");
 	}
 
@@ -2619,7 +2624,8 @@ int main(int argc, char **argv)
 	      msg.whack_process_status ||
 	      msg.whack_fips_status || msg.whack_brief_status || msg.whack_clear_stats || msg.whack_options ||
 	      msg.whack_shutdown || msg.whack_purgeocsp || msg.whack_seccomp_crashtest || msg.whack_show_states ||
-	      msg.whack_rekey_ike || msg.whack_rekey_ipsec))
+	      msg.whack_rekey_ike || msg.whack_rekey_ipsec ||
+	      msg.whack_listpubkeys || msg.whack_checkpubkeys))
 		diag("no action specified; try --help for hints");
 
 	if (msg.policy & POLICY_AGGRESSIVE) {

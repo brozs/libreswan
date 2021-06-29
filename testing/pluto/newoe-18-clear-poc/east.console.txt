@@ -7,20 +7,25 @@ east #
  ipsec start
 Redirecting to: [initsystem]
 east #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 east #
  # give OE policies time to load
 east #
- sleep 5
+ ../../guestbin/wait-for.sh --match 'loaded 10,' -- ipsec auto --status
+000 Total IPsec connections: loaded 10, active 0
 east #
  echo "initdone"
 initdone
 east #
- ../../pluto/bin/ipsec-look.sh
+ ipsec whack --shuntstatus
+000 Bare Shunt list:
+000  
+east #
+ ../../guestbin/ipsec-look.sh
 east NOW
 XFRM state:
 src 192.1.2.23 dst 192.1.3.209
-	proto esp spi 0xSPISPI reqid REQID mode transport
+	proto esp spi 0x00000000 reqid 0 mode transport
 	replay-window 0 
 	sel src 192.1.2.23/32 dst 192.1.3.209/32 proto icmp type 0 code 0 dev eth1 
 XFRM policy:
@@ -49,11 +54,11 @@ src 192.1.3.254/32 dst 192.1.2.23/32
 src 192.1.3.254/32 dst 192.1.2.23/32
 	dir in priority 3129279 ptype main
 src 192.1.2.23/32 dst 192.1.3.209/32
-	dir out priority 4177854 ptype main
+	dir out priority 4177855 ptype main
 src 192.1.2.23/32 dst 192.1.3.0/24
 	dir out priority 4177870 ptype main
 	tmpl src 0.0.0.0 dst 0.0.0.0
-		proto esp reqid REQID mode transport
+		proto esp reqid 0 mode transport
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES
@@ -69,9 +74,5 @@ east #
  # should not show any hits
 east #
  grep "negotiated connection" /tmp/pluto.log
-east #
- ../bin/check-for-core.sh
-east #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 east #
  

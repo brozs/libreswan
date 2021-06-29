@@ -27,7 +27,7 @@
 #include "constants.h"
 #include "ike_alg.h"
 #include "ike_alg_encrypt_ops.h"
-#include "lswnss.h"		/* for lswlog_nss_error() */
+#include "lswnss.h"		/* for llog_nss_error() */
 
 static void ike_alg_nss_cbc(const struct encrypt_desc *alg,
 			    uint8_t *in_buf, size_t in_buf_len, PK11SymKey *symkey,
@@ -63,7 +63,7 @@ static void ike_alg_nss_cbc(const struct encrypt_desc *alg,
 				  alg->common.fqn);
 	}
 
-	/* Output buffer for transformed data.  */
+	/* Output buffer for transformed data. */
 	uint8_t *out_buf = PR_Malloc((PRUint32)in_buf_len);
 	int out_buf_len = 0;
 

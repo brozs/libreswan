@@ -39,19 +39,21 @@ struct iface_packet {
 	struct logger *logger; /*global*/
 };
 
-enum iface_status {
-	IFACE_OK = 0,
-	IFACE_EOF,
-	IFACE_FATAL,
-	IFACE_IGNORE, /* aka EAGAIN */
+enum iface_read_status {
+	IFACE_READ_OK = 0,
+	IFACE_READ_IGNORE, /* aka EAGAIN */
+	IFACE_READ_ABORT, /* on return, delete iface! */
+	/* place holders, same as ignore for now */
+	IFACE_READ_ERROR,
+	IFACE_READ_EOF,
 };
 
 struct iface_io {
 	bool send_keepalive;
 	const struct ip_protocol *protocol;
-	enum iface_status (*read_packet)(const struct iface_endpoint *ifp,
-					 struct iface_packet *,
-					 struct logger *logger);
+	enum iface_read_status (*read_packet)(struct iface_endpoint *ifp,
+					      struct iface_packet *,
+					      struct logger *logger);
 	ssize_t (*write_packet)(const struct iface_endpoint *ifp,
 				const void *ptr, size_t len,
 				const ip_endpoint *remote_endpoint,
@@ -93,7 +95,7 @@ void add_or_keep_iface_dev(struct raw_iface *ifp, struct logger *logger);
 struct iface_dev *find_iface_dev_by_address(const ip_address *address);
 
 struct iface_endpoint {
-	struct iface_dev   *ip_dev;
+	struct iface_dev *ip_dev;
 	const struct iface_io *io;
 	ip_endpoint local_endpoint;	/* interface IP address:port */
 	int fd;                 /* file descriptor of socket for IKE UDP messages */
@@ -164,9 +166,9 @@ struct iface_endpoint {
 	ip_endpoint iketcp_remote_endpoint;
 	bool iketcp_server;
 	enum iketcp_state {
-		IKETCP_OPEN = 1,
-		IKETCP_PREFIXED, /* received IKETCP */
-		IKETCP_RUNNING,  /* received at least one packet */
+		IKETCP_ACCEPTED = 1,
+		IKETCP_PREFIX_RECEIVED, /* received IKETCP */
+		IKETCP_ENABLED, /* received at least one packet */
 		IKETCP_STOPPED, /* waiting on state to close */
 	} iketcp_state;
 	struct event *iketcp_timeout;
@@ -177,7 +179,7 @@ void free_any_iface_endpoint(struct iface_endpoint **ifp);
 
 extern struct iface_endpoint *interfaces;   /* public interfaces */
 
-extern struct iface_endpoint *find_iface_endpoint_by_local_endpoint(ip_endpoint *local_endpoint);
+extern struct iface_endpoint *find_iface_endpoint_by_local_endpoint(ip_endpoint local_endpoint);
 extern bool use_interface(const char *rifn);
 extern void find_ifaces(bool rm_dead, struct logger *logger);
 extern void show_ifaces_status(struct show *s);

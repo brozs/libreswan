@@ -36,7 +36,7 @@ struct virtual_ip {
 	refcnt_t refcnt;
 	unsigned short flags;	/* union of F_VIRTUAL_* */
 	unsigned short n_net;
-	ip_subnet net[0];
+	ip_subnet net[0 /*n_net*/];	/* 0-length array is a GCC extension */
 };
 
 /*
@@ -210,6 +210,13 @@ void init_virtual_ip(const char *private_list,
  * @param string (virtual_private= from ipsec.conf)
  * @return virtual_ip
  */
+
+static void virtual_ip_free(void *obj, where_t where UNUSED)
+{
+	struct virtual_ip *vip = obj;
+	pfree(vip);
+}
+
 struct virtual_ip *create_virtual(const char *string, struct logger *logger)
 {
 
@@ -275,10 +282,9 @@ struct virtual_ip *create_virtual(const char *string, struct logger *logger)
 	}
 
 	/* allocate struct + array */
-	struct virtual_ip *v = (struct virtual_ip *)alloc_bytes(
-		sizeof(struct virtual_ip) + (n_net * sizeof(ip_subnet)),
-		"virtual description");
-	refcnt_init("vip", v, &v->refcnt, HERE);
+	struct virtual_ip *v = refcnt_overalloc(struct virtual_ip,
+						/*extra*/(n_net * sizeof(ip_subnet)),
+						virtual_ip_free, HERE);
 
 	v->flags = flags;
 	v->n_net = n_net;
@@ -365,7 +371,7 @@ static bool net_in_list(const ip_subnet peer_net, const ip_subnet *list,
 			int len)
 {
 	for (int i = 0; i < len; i++)
-		if (subnetinsubnet(&peer_net, &list[i]))
+		if (subnet_in_subnet(peer_net, list[i]))
 			return TRUE;
 
 	return FALSE;
@@ -382,13 +388,13 @@ static bool net_in_list(const ip_subnet peer_net, const ip_subnet *list,
  */
 err_t check_virtual_net_allowed(const struct connection *c,
 				const ip_subnet peer_net,
-				const ip_address *peers_addr)
+				const ip_address peers_addr)
 {
 	const struct virtual_ip *virt = c->spd.that.virt;
 	if (virt == NULL)
 		return NULL;
 
-	if (virt->flags & F_VIRTUAL_HOST && !subnetishost(&peer_net)) {
+	if (virt->flags & F_VIRTUAL_HOST && subnet_size(peer_net) != 1) {
 		return "only virtual host single IPs are allowed";
 	}
 
@@ -396,8 +402,7 @@ err_t check_virtual_net_allowed(const struct connection *c,
 		return NULL;
 
 	if (virt->flags & F_VIRTUAL_NO) {
-		if (subnetishost(&peer_net) && addrinsubnet(peers_addr, &peer_net))
-		{
+		if (subnet_eq_address(peer_net, peers_addr)) {
 			return NULL;
 		}
 		/* ??? why isn't this case an error? */
@@ -481,18 +486,12 @@ void show_virtual_private(struct show *s)
 	}
 }
 
-static void virtual_ip_free(struct virtual_ip **vip, where_t where UNUSED)
-{
-	pfree(*vip);
-	*vip = NULL;
-}
-
 struct virtual_ip *virtual_ip_addref(struct virtual_ip *vip, where_t where)
 {
-	return refcnt_addref(vip, where);
+	return addref(vip, where);
 }
 
 void virtual_ip_delref(struct virtual_ip **vip, where_t where)
 {
-	refcnt_delref(vip, virtual_ip_free, where);
+	delref(vip, where);
 }

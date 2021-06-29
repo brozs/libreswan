@@ -98,7 +98,7 @@ bool jambuf_ok(struct jambuf *buf);
 struct jambuf array_as_jambuf(char *array, size_t sizeof_array);
 #define ARRAY_AS_JAMBUF(ARRAY) array_as_jambuf((ARRAY), sizeof(ARRAY))
 
-/* primitive to construct a JAMBUF on the stack.  */
+/* primitive to construct a JAMBUF on the stack. */
 #define JAMBUF(BUF)							\
 	/* create the buffer */						\
 	for (char lswbuf[LOG_WIDTH], *lswbuf_ = lswbuf;			\
@@ -202,12 +202,12 @@ jam_bytes_fn jam_sanitized_bytes;
 		jam_sanitized_bytes(BUF, hunk_.ptr, hunk_.len);		\
 	})
 
-/* (ismeta(b1)) ? \NNN : b1)... (i.e., shell escaped) */
-jam_bytes_fn jam_meta_escaped_bytes;
-#define jam_meta_escaped_hunk(BUF, HUNK)				\
+/* (ismeta(b1)) ? \NNN : b1)... (i.e., escaped for shell within quotes) */
+jam_bytes_fn jam_shell_quoted_bytes;
+#define jam_shell_quoted_hunk(BUF, HUNK)				\
 	({								\
 		typeof(HUNK) hunk_ = (HUNK); /* evaluate once */	\
-		jam_meta_escaped_bytes(BUF, hunk_.ptr, hunk_.len);	\
+		jam_shell_quoted_bytes(BUF, hunk_.ptr, hunk_.len);	\
 	})
 
 /*
@@ -242,5 +242,15 @@ jam_bytes_fn jam_meta_escaped_bytes;
  * To debug, set this to printf or similar.
  */
 extern int (*jambuf_debugf)(const char *format, ...) PRINTF_LIKE(1);
+
+/*
+ * E must have been saved!  Assume it is used as "... "PRI_ERRNO.
+ *
+ *   _Errno E: <strerror(E)>
+ *
+ * somewhere better?
+ */
+#define PRI_ERRNO "Errno %d: %s"
+#define pri_errno(E) (E), strerror(E)
 
 #endif

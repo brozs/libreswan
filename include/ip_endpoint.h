@@ -24,50 +24,58 @@
 #include "ip_address.h"
 #include "ip_port.h"
 #include "ip_protoport.h"
+#include "ip_bytes.h"
 
 struct jambuf;
 struct ip_protocol;
 
 typedef struct {
+	bool is_set;
 	/*
 	 * Index into the struct ip_info array; must be stream
 	 * friendly.
 	 */
-	unsigned version; /* 0, 4, 6 */
+	enum ip_version version; /* 0, 4, 6 */
 	/*
 	 * We need something that makes static IPv4 initializers possible
 	 * (struct in_addr requires htonl() which is run-time only).
 	 */
 	struct ip_bytes bytes;
 	/*
-	 * In pluto "0" denotes all ports (or, in the context of an
-	 * endpoint, is that none?).
+	 * Protocol 0 is interpreted as a wild card so isn't allowed.
+	 */
+	unsigned ipproto;
+	/*
+	 * For protocols such as UDP and TCP, the 0 port is
+	 * interpreted as a wild card so isn't allowed.
 	 */
 	int hport;
-	unsigned ipproto;
-	bool is_endpoint;
 } ip_endpoint;
 
-#define PRI_ENDPOINT "%s (version=%d hport=%u ipproto=%u is_endpoint=%s)"
+#define PRI_ENDPOINT "%s (is_set=%s version=%d bytes="PRI_BYTES" ipproto=%u hport=%u"
 #define pri_endpoint(A, B)						\
-		str_endpoint(A, B),					\
+	str_endpoint(A, B),						\
+		bool_str((A)->is_set),					\
 		(A)->version,						\
-		(A)->hport,						\
+		pri_bytes((A)->bytes),					\
 		(A)->ipproto,						\
-		bool_str((A)->is_endpoint)
+		(A)->hport
 
-void pexpect_endpoint(const ip_endpoint *e, const char *t, where_t where);
-#define pendpoint(E) pexpect_endpoint(E, #E, HERE)
+void pexpect_endpoint(const ip_endpoint *e, where_t where);
+#define pendpoint(E) pexpect_endpoint(E, HERE)
 
 /*
  * Constructors.
  */
 
-ip_endpoint endpoint_from_address_protocol_port(const ip_address *address,
+ip_endpoint endpoint_from_raw(where_t where, enum ip_version version,
+			      const struct ip_bytes bytes,
+			      const struct ip_protocol *protocol,
+			      ip_port port);
+
+ip_endpoint endpoint_from_address_protocol_port(const ip_address address,
 						const struct ip_protocol *protocol,
 						ip_port port);
-ip_endpoint endpoint3(const struct ip_protocol *protocol,
-		      const ip_address *address, ip_port port);
 
 /*
  * Formatting
@@ -98,13 +106,6 @@ size_t jam_endpoints(struct jambuf *jambuf, const ip_endpoint *src, const ip_end
 const char *str_endpoints(const ip_endpoint *src, const ip_endpoint *dst, endpoints_buf *buf);
 
 /*
- * Logic
- */
-
-bool endpoint_eq(const ip_endpoint *l, const ip_endpoint *r);
-bool endpoint_address_eq(const ip_endpoint *endpoint, const ip_address *address);
-
-/*
  * Magic values.
  *
  * XXX: While the headers call the all-zero address "ANY" (INADDR_ANY,
@@ -117,23 +118,30 @@ bool endpoint_address_eq(const ip_endpoint *endpoint, const ip_address *address)
  */
 
 extern const ip_endpoint unset_endpoint;
-bool endpoint_is_unset(const ip_endpoint *endpoint);
 
-const struct ip_info *endpoint_type(const ip_endpoint *endpoint);
-const struct ip_protocol *endpoint_protocol(const ip_endpoint *endpoint);
+bool endpoint_is_unset(const ip_endpoint *endpoint);			/* handles NULL */
+const struct ip_info *endpoint_type(const ip_endpoint *endpoint);	/* handles NULL */
 
-bool endpoint_is_any(const ip_endpoint *endpoint);
-bool endpoint_is_specified(const ip_endpoint *endpoint);
+bool endpoint_is_specified(const ip_endpoint endpoint);
 
-ip_address endpoint_address(const ip_endpoint *endpoint);
-ip_endpoint set_endpoint_address(const ip_endpoint *endpoint,
-				 const ip_address) MUST_USE_RESULT;
+const struct ip_protocol *endpoint_protocol(const ip_endpoint endpoint);
+ip_address endpoint_address(const ip_endpoint endpoint);
+ip_port endpoint_port(const ip_endpoint endpoint);
 
-ip_port endpoint_port(const ip_endpoint *endpoint);
-ip_endpoint set_endpoint_port(const ip_endpoint *endpoint,
+/*
+ * Logic
+ */
+
+bool endpoint_eq_endpoint(const ip_endpoint l, const ip_endpoint r);
+bool endpoint_address_eq_address(const ip_endpoint endpoint, const ip_address address);
+
+/*
+ * hacks
+ */
+
+int endpoint_hport(const ip_endpoint endpoint);
+ip_endpoint set_endpoint_port(const ip_endpoint endpoint,
 			      ip_port port) MUST_USE_RESULT;
 void update_endpoint_port(ip_endpoint *endpoint, ip_port port);
-
-int endpoint_hport(const ip_endpoint *endpoint);
 
 #endif

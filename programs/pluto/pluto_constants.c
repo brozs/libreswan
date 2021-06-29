@@ -35,6 +35,7 @@
 #include "constants.h"
 #include "enum_names.h"
 #include "defs.h"
+#include "kernel.h"
 
 /*
  * To obsolete or convert to runtime options:
@@ -107,40 +108,81 @@ enum_names sd_action_names = {
 };
 
 /* Timer events */
-static const char *const timer_event_name[] = {
-#define E(EVENT) [EVENT] = #EVENT
 
+static const char *const event_name[] = {
+#define E(EVENT) [EVENT - EVENT_NULL] = #EVENT
 	E(EVENT_NULL),
-
-	E(EVENT_SO_DISCARD),
 	E(EVENT_RETRANSMIT),
-
-	E(EVENT_SA_REKEY),
-	E(EVENT_SA_REPLACE),
-	E(EVENT_SA_EXPIRE),
-
-	E(EVENT_v1_SEND_XAUTH),
-	E(EVENT_v1_SA_REPLACE_IF_USED),
 	E(EVENT_DPD),
 	E(EVENT_DPD_TIMEOUT),
 	E(EVENT_CRYPTO_TIMEOUT),
 	E(EVENT_PAM_TIMEOUT),
-
-	E(EVENT_v2_LIVENESS),
-	E(EVENT_v2_RELEASE_WHACK),
-	E(EVENT_v2_INITIATE_CHILD),
-	E(EVENT_v2_ADDR_CHANGE),
-	E(EVENT_v2_REDIRECT),
-	E(EVENT_RETAIN),
-
 #undef E
 };
 
-enum_names timer_event_names = {
-	EVENT_NULL, EVENT_RETAIN,
-	ARRAY_REF(timer_event_name),
-	NULL, /* prefix */
+static const enum_names event_names = {
+	EVENT_NULL, EVENT_PAM_TIMEOUT,
+	ARRAY_REF(event_name),
+	"EVENT_", /* prefix */
 	NULL
+};
+
+static const char *const event_sa_name[] = {
+#define E(EVENT) [EVENT - EVENT_SA_DISCARD] = #EVENT
+	E(EVENT_SA_DISCARD),
+	E(EVENT_SA_REKEY),
+	E(EVENT_SA_REPLACE),
+	E(EVENT_SA_EXPIRE),
+#undef E
+};
+
+static const enum_names event_sa_names = {
+	EVENT_SA_DISCARD, EVENT_SA_EXPIRE,
+	ARRAY_REF(event_sa_name),
+	"EVENT_SA_", /* prefix */
+	&event_names,
+};
+
+static const char *const event_v1_name[] = {
+#define E(EVENT) [EVENT - EVENT_v1_SEND_XAUTH] = #EVENT
+	E(EVENT_v1_SEND_XAUTH),
+	E(EVENT_v1_REPLACE_IF_USED),
+#undef E
+};
+
+static const enum_names event_v1_names = {
+	EVENT_v1_SEND_XAUTH, EVENT_v1_REPLACE_IF_USED,
+	ARRAY_REF(event_v1_name),
+	"EVENT_v1_", /* prefix */
+	&event_sa_names
+};
+
+static const char *const event_v2_name[] = {
+#define E(EVENT) [EVENT - EVENT_v2_LIVENESS] = #EVENT
+	E(EVENT_v2_LIVENESS),
+	E(EVENT_v2_ADDR_CHANGE),
+	E(EVENT_v2_REDIRECT),
+#undef E
+};
+
+static const enum_names event_v2_names = {
+	EVENT_v2_LIVENESS, EVENT_v2_REDIRECT,
+	ARRAY_REF(event_v2_name),
+	"EVENT_v2_", /* prefix */
+	&event_v1_names,
+};
+
+static const char *const event_retain_name[] = {
+#define E(EVENT) [EVENT - EVENT_RETAIN] = #EVENT
+	E(EVENT_RETAIN),
+#undef E
+};
+
+const enum_names timer_event_names = {
+	EVENT_RETAIN, EVENT_RETAIN,
+	ARRAY_REF(event_retain_name),
+	"EVENT_", /* prefix */
+	&event_v2_names,
 };
 
 /* NAT methods */
@@ -365,7 +407,7 @@ enum_names v2_sa_type_names = {
 	NULL,
 };
 
-static enum_names *sa_type_name[] = {
+static const enum_names *sa_type_name[] = {
 	[IKEv1 - IKEv1] = &v1_sa_type_names,
 	[IKEv2 - IKEv1] = &v2_sa_type_names,
 };
@@ -374,6 +416,28 @@ enum_enum_names sa_type_names = {
 	IKEv1, IKEv2,
 	ARRAY_REF(sa_type_name),
 };
+
+/* enum kernel_policy_op_names */
+
+static const char *kernel_policy_op_name[] = {
+	[0] = "KP_INVALID",
+#define S(E) [E] = #E
+	S(KP_ADD_OUTBOUND),
+	S(KP_REPLACE_OUTBOUND),
+	S(KP_DELETE_OUTBOUND),
+	S(KP_ADD_INBOUND),
+	S(KP_REPLACE_INBOUND),
+	S(KP_DELETE_INBOUND),
+#undef S
+};
+
+enum_names kernel_policy_op_names = {
+	0, KP_DELETE_INBOUND,
+	ARRAY_REF(kernel_policy_op_name),
+	.en_prefix = "KP_",
+};
+
+/* */
 
 static const char *const perspective_name[] = {
 	[NO_PERSPECTIVE] = "NO_PERSPECTIVE",
@@ -438,6 +502,7 @@ static const enum_names *pluto_enum_names_checklist[] = {
 	&v2_sa_type_names,
 	&perspective_names,
 	&sa_policy_bit_names,
+	&kernel_policy_op_names,
 };
 
 void init_pluto_constants(void) {

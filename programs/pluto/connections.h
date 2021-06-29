@@ -162,7 +162,7 @@ const char *str_policy_prio(policy_prio_t pp, policy_prio_buf *buf);
 struct host_pair;	/* opaque type */
 
 struct end {
-	const char *leftright;
+	const char *leftright; /* redundant .config->end_name */
 	struct id id;
 
 	enum keyword_host host_type;
@@ -178,16 +178,14 @@ struct end {
 
 	ip_selector client;
 
-	/* original information from whack */
-	struct {
-		struct {
-			ip_subnet subnet;
-			ip_protoport protoport;
-		} client;
-		struct {
-			unsigned ikeport;
-		} host;
-	} raw;
+	/*
+	 * An extract of the original configuration information for
+	 * the connection's end sent over by whack.
+	 *
+	 * Danger: for a connection instance, this point into the
+	 * parent connection.
+	 */
+	const struct config_end *config;
 
 	chunk_t sec_label;
 	bool key_from_DNS_on_demand;
@@ -356,7 +354,7 @@ struct connection {
 	struct ephemeral_variables temp_vars;
 
 	so_serial_t		/* state object serial number */
-		newest_isakmp_sa,
+		newest_ike_sa,
 		newest_ipsec_sa;
 
 	lmod_t extra_debugging;
@@ -409,7 +407,7 @@ struct connection {
 	uint32_t metric;	/* metric for tunnel routes */
 	uint16_t connmtu;	/* mtu for tunnel routes */
 	uint32_t statsval;	/* track what we have told statsd */
-	uint16_t nflog_group;	/* NFLOG group - 0 means disabled  */
+	uint16_t nflog_group;	/* NFLOG group - 0 means disabled */
 	msgid_t ike_window;     /* IKE v2 window size 7296#section-2.3 */
 
 	char *redirect_to;        /* RFC 5685 */
@@ -417,10 +415,28 @@ struct connection {
 
 	struct list_entry serialno_list_entry;
 	struct list_entry hash_table_entries[CONNECTION_HASH_TABLES_ROOF];
-};
 
-#define oriented(c) ((c).interface != NULL)
-extern bool orient(struct connection *c);
+	/*
+	 * An extract of the original configuration information for
+	 * the connection's end sent over by whack.
+	 */
+	struct config_end {
+		const char *end_name;
+		enum left_right { LEFT_END, RIGHT_END, } end_index;
+		struct {
+			ip_subnet subnet;
+			ip_protoport protoport;
+		} client;
+		struct {
+			unsigned ikeport;
+		} host;
+	} config[2];
+	/*
+	 * Danger: for a connection instance, these point into the
+	 * parent connection.
+	 */
+	const struct config_end *local, *remote;
+};
 
 extern bool same_peer_ids(const struct connection *c,
 			  const struct connection *d, const struct id *peers_id);
@@ -434,25 +450,16 @@ void jam_end(struct jambuf *buf, const struct end *this, const struct end *that,
 	     bool is_left, lset_t policy, bool filter_rnh);
 
 struct whack_message;   /* forward declaration of tag whack_msg */
-extern void add_connection(struct fd *whackfd, const struct whack_message *wm);
+extern void add_connection(const struct whack_message *wm, struct logger *logger);
 
 void update_ends_from_this_host_addr(struct end *this, struct end *that);
-extern void restart_connections_by_peer(struct connection *c);
+extern void restart_connections_by_peer(struct connection *c, struct logger *logger);
 extern void flush_revival(const struct connection *c);
 
-extern void initiate_ondemand(const ip_endpoint *our_client,
-			      const ip_endpoint *peer_client,
-			      bool held, bool background,
-			      const chunk_t sec_label,
-			      const char *why,
-			      struct logger *logger);
-
-extern void terminate_connection(const char *name, bool quiet,
-				 struct fd *whack);
-extern void release_connection(struct connection *c, bool relations, struct fd *whackfd);
-extern void delete_connection(struct connection *c, bool relations);
-extern void delete_connections_by_name(const char *name, bool strict,
-				       struct fd *whack);
+extern void terminate_connections_by_name(const char *name, bool quiet, struct logger *logger);
+extern void release_connection(struct connection *c, bool relations);
+extern void delete_connection(struct connection **cp, bool relations);
+extern void delete_connections_by_name(const char *name, bool strict, struct logger *logger);
 extern void delete_every_connection(void);
 struct connection *add_group_instance(struct connection *group,
 				      const ip_selector *target,
@@ -460,8 +467,6 @@ struct connection *add_group_instance(struct connection *group,
 				      uint16_t sport,
 				      uint16_t dport);
 
-extern void remove_group_instance(const struct connection *group,
-				  const char *name);
 extern struct connection *route_owner(struct connection *c,
 				      const struct spd_route *cur_spd,
 				      struct spd_route **srp,
@@ -470,8 +475,8 @@ extern struct connection *route_owner(struct connection *c,
 
 extern struct connection *shunt_owner(const ip_selector *ours,
 				      const ip_selector *peers);
-extern void rekey_now(const char *name, enum sa_type sa_type, struct fd *whackfd,
-		      bool background);
+extern void rekey_now(const char *name, enum sa_type sa_type,
+		      bool background, struct logger *logger);
 
 #define remote_id_was_instantiated(c) \
 	( (c)->kind == CK_INSTANCE && \
@@ -493,7 +498,7 @@ struct connection *find_v1_client_connection(struct connection *c,
 struct connection *find_connection_for_clients(struct spd_route **srp,
 					       const ip_endpoint *our_client,
 					       const ip_endpoint *peer_client,
-					       chunk_t sec_label,
+					       shunk_t sec_label,
 					       struct logger *logger);
 
 /* instantiating routines */
@@ -529,11 +534,11 @@ typedef struct {
 		 /*"["*/ 1 +
 		 /*<serialno>*/ 10 +
 		 /*"]"*/ 1 +
-		 /*<myclient*/SUBNETTOT_BUF +
+		 /*<myclient*/sizeof(subnet_buf) +
 		 /*"=== ..."*/ 7 +
-		 /*<peer>*/ ADDRTOT_BUF +
+		 /*<peer>*/sizeof(address_buf) +
 		 /*"==="*/ 3 +
-		 /*<peer_client>*/ SUBNETTOT_BUF +
+		 /*<peer_client>*/sizeof(subnet_buf) +
 		 /*"\0"*/ 1 +
 		 /*<cookie>*/ 1];
 } connection_buf;
@@ -551,8 +556,8 @@ extern void update_state_connection(struct state *st, struct connection *c);
  * either a %hold or an eroute for an instance iff
  * the template is a /32 -> /32.  This requires some special casing.
  */
-#define eclipsable(sr) (selector_is_one_address(&(sr)->this.client) &&	\
-			selector_is_one_address(&(sr)->that.client))
+#define eclipsable(sr) (selector_contains_one_address((sr)->this.client) && \
+			selector_contains_one_address((sr)->that.client))
 extern long eclipse_count;
 extern struct connection *eclipsed(const struct connection *c, struct spd_route ** /*OUT*/);
 
@@ -569,17 +574,11 @@ void connection_check_phase2(struct logger *logger);
 void init_connections(void);
 
 extern int foreach_connection_by_alias(const char *alias,
-				       struct fd *whackfd,
 				       int (*f)(struct connection *c,
-						struct fd *whackfd,
-						void *arg),
-				       void *arg);
+						void *arg, struct logger *logger),
+				       void *arg, struct logger *logger);
 
 extern void unshare_connection_end(struct end *e);
-
-extern void liveness_clear_connection(struct connection *c, const char *v);
-
-extern void liveness_action(struct state *st);
 
 extern uint32_t calculate_sa_prio(const struct connection *c, bool oe_shunt);
 
@@ -587,8 +586,9 @@ so_serial_t get_newer_sa_from_connection(struct state *st);
 
 diag_t add_end_cert_and_preload_private_key(CERTCertificate *cert, struct end *dst_end,
 					    bool preserve_ca, struct logger *logger);
-extern void reread_cert_connections(struct fd *whackfd);
 
 ip_port end_host_port(const struct end *end, const struct end *other);
+
+extern struct connection *connections;
 
 #endif

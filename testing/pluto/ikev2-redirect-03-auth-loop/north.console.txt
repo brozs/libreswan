@@ -5,7 +5,7 @@ north #
  ipsec start
 Redirecting to: [initsystem]
 north #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 north #
  ipsec auto --add any-northnet-ipv4-psk-ikev2
 002 "any-northnet-ipv4-psk-ikev2": added IKEv2 connection
@@ -19,6 +19,10 @@ north #
 north NOW
 XFRM state:
 XFRM policy:
+src 192.0.2.0/24 dst 192.0.1.0/24
+	dir out priority 2084814 ptype main
+	tmpl src 0.0.0.0 dst 0.0.0.0
+		proto esp reqid 0 mode transport
 XFRM done
 IPSEC mangle TABLES
 NEW_IPSEC_CONN mangle TABLES
@@ -34,9 +38,5 @@ north #
  # confirm east is in unrouted state again
 north #
  hostname | grep east > /dev/null && ipsec status |grep "eroute owner"
-north #
- ../bin/check-for-core.sh
-north #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 north #
  

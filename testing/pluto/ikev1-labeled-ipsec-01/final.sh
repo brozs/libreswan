@@ -1,5 +1,4 @@
-../../pluto/bin/ipsec-look.sh
+../../guestbin/ipsec-look.sh
 ipsec whack --shutdown
-semodule -r ipsec-test-module
-../bin/check-for-core.sh
-if [ -f /sbin/ausearch ]; then ausearch -ts recent -m AVC | audit2allow ; fi
+semodule -r ipsecspd
+rm -rf ipsecspd.fc ipsecspd.if tmp

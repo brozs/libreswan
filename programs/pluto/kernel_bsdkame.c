@@ -28,6 +28,7 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/queue.h>		/* for TAILQ_xx macros */
 
 #include <net/pfkeyv2.h>
 #include <netinet/in.h>
@@ -87,7 +88,7 @@ static void bsdkame_init_pfkey(struct logger *logger)
 }
 
 static void bsdkame_process_raw_ifaces(struct raw_iface *rifaces,
-                                       struct logger *logger)
+				       struct logger *logger)
 {
 	struct raw_iface *ifp;
 
@@ -213,7 +214,7 @@ static void bsdkame_pfkey_async(struct sadb_msg *reply)
 		bsdkame_pfkey_acquire(reply);
 		break;
 
-	/* case SADB_NAT_T UPDATE STUFF  */
+	/* case SADB_NAT_T UPDATE STUFF */
 
 	default:
 		break;
@@ -264,31 +265,30 @@ static void bsdkame_consume_pfkey(int pfkeyfd, unsigned int pfkey_seq)
  * We are were to install a set of policy, when there is in fact an SA
  * that is already setup.
  *
- * Well, the code is actually shared with shunt_eroute, since for KAME,
- * we set up the policy in an abstracted sense.
+ * Well, the code is actually shared with shunt_policy(), since for
+ * KAME, we set up the policy in an abstracted sense.
  *
  */
-static bool bsdkame_raw_eroute(const ip_address *this_host,
-			       const ip_selector *this_client,
-			       const ip_address *that_host,
-			       const ip_selector *that_client,
+static bool bsdkame_raw_policy(enum kernel_policy_op sadb_op,
+			       const ip_address *src_host,
+			       const ip_selector *src_client,
+			       const ip_address *dst_host,
+			       const ip_selector *dst_client,
 			       ipsec_spi_t cur_spi UNUSED,
 			       ipsec_spi_t new_spi,
 			       const struct ip_protocol *sa_proto,
 			       unsigned int transport_proto,
 			       enum eroute_type esatype UNUSED,
-			       const struct pfkey_proto_info *proto_info,
+			       const struct encap_rules *encap,
 			       deltatime_t use_lifetime UNUSED,
 			       uint32_t sa_priority UNUSED,
 			       const struct sa_marks *sa_marks UNUSED,
 			       const uint32_t xfrm_if_id UNUSED,
-			       enum pluto_sadb_operations sadb_op,
-			       const char *text_said UNUSED,
-			       const chunk_t *policy_label UNUSED,
+			       const shunk_t policy_label UNUSED,
 			       struct logger *logger)
 {
-	ip_sockaddr saddr = sockaddr_from_endpoint(&this_client->addr);
-	ip_sockaddr daddr = sockaddr_from_endpoint(&that_client->addr);
+	ip_sockaddr saddr = sockaddr_from_address(selector_prefix(*src_client));
+	ip_sockaddr daddr = sockaddr_from_address(selector_prefix(*dst_client));
 	char pbuf[512];
 	struct sadb_x_policy *policy_struct = (struct sadb_x_policy *)pbuf;
 	struct sadb_x_ipsecrequest *ir;
@@ -309,7 +309,7 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 		/* shunt route */
 		switch (ntohl(new_spi)) {
 		case SPI_PASS:
-			dbg("netlink_raw_eroute: SPI_PASS");
+			dbg("netlink_raw_policy: SPI_PASS");
 			policy = IPSEC_POLICY_NONE;
 			break;
 		case SPI_HOLD:
@@ -321,7 +321,7 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 			 * After expiration, the underlying policy causing the original acquire
 			 * will fire again, dropping further packets.
 			 */
-			dbg("netlink_raw_eroute: SPI_HOLD implemented as no-op");
+			dbg("netlink_raw_policy: SPI_HOLD implemented as no-op");
 			return TRUE; /* yes really */
 		case SPI_DROP:
 		case SPI_REJECT:
@@ -329,11 +329,12 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 			policy = IPSEC_POLICY_DISCARD;
 			break;
 		case SPI_TRAP:
-			if (sadb_op == ERO_ADD_INBOUND ||
-				sadb_op == ERO_DEL_INBOUND)
+			if (sadb_op == KP_ADD_INBOUND ||
+				sadb_op == KP_DELETE_INBOUND)
 				return TRUE;
 
 			break;
+		case SPI_IGNORE:
 		case SPI_TRAPSUBNET: /* unused in our code */
 		default:
 			bad_case(ntohl(new_spi));
@@ -344,7 +345,7 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 		bad_case(esatype);
 	}
 
-	const int dir = ((sadb_op == ERO_ADD_INBOUND || sadb_op == ERO_DEL_INBOUND) ?
+	const int dir = ((sadb_op == KP_ADD_INBOUND || sadb_op == KP_DELETE_INBOUND) ?
 			 IPSEC_DIR_INBOUND : IPSEC_DIR_OUTBOUND);
 
 	/*
@@ -363,23 +364,27 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 
 	policy_struct->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
 	policy_struct->sadb_x_policy_type = policy;
-	policy_struct->sadb_x_policy_dir = dir;
+	policy_struct->sadb_x_policy_dir  = dir;
 	policy_struct->sadb_x_policy_id   = 0; /* needs to be set, and recorded */
 
 	policylen = sizeof(*policy_struct);
 
 	if (policy == IPSEC_POLICY_IPSEC) {
-		ip_sockaddr local_sa = sockaddr_from_address(this_host);
-		ip_sockaddr remote_sa = sockaddr_from_address(that_host);
+		ip_sockaddr local_sa = sockaddr_from_address(*src_host);
+		ip_sockaddr remote_sa = sockaddr_from_address(*dst_host);
 
 		ir = (struct sadb_x_ipsecrequest *)&policy_struct[1];
 
 		ir->sadb_x_ipsecrequest_len = (sizeof(struct sadb_x_ipsecrequest) +
 					       local_sa.len + remote_sa.len);
 		dbg("%s() sa_proto is %d %s", __func__, sa_proto->ipproto, sa_proto->name);
-		if (sa_proto->ipproto == ET_IPIP) {
+		/*pexpect(encap != NULL)?*/
+		if (encap != NULL) {
+			ir->sadb_x_ipsecrequest_mode = encap->tunnel ? IPSEC_MODE_TUNNEL : IPSEC_MODE_TRANSPORT;
+			ir->sadb_x_ipsecrequest_proto = encap->rule[0].proto;
+		} else if (sa_proto->ipproto == ET_IPIP) {
 			ir->sadb_x_ipsecrequest_mode = IPSEC_MODE_TUNNEL;
-			ir->sadb_x_ipsecrequest_proto = proto_info != NULL ? (unsigned)proto_info->proto : sa_proto->ipproto;
+			ir->sadb_x_ipsecrequest_proto = sa_proto->ipproto;
 		} else {
 			ir->sadb_x_ipsecrequest_mode = IPSEC_MODE_TRANSPORT;
 			ir->sadb_x_ipsecrequest_proto = sa_proto->ipproto;
@@ -409,8 +414,8 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 
 	dbg("calling pfkey_send_spdadd() from %s", __func__);
 	ret = pfkey_send_spdadd(pfkeyfd,
-				&saddr.sa.sa, this_client->maskbits,
-				&daddr.sa.sa, that_client->maskbits,
+				&saddr.sa.sa, src_client->maskbits,
+				&daddr.sa.sa, dst_client->maskbits,
 				transport_proto ? transport_proto : 255 /* proto */,
 				(caddr_t)policy_struct, policylen,
 				pfkey_seq);
@@ -419,13 +424,13 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
 	bsdkame_consume_pfkey(pfkeyfd, pfkey_seq);
 
 	if (ret < 0) {
-		endpoint_buf s, d;
+		selector_buf s, d;
 		llog(RC_LOG, logger,
-			    "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=eroute", ret,
-			    ipsec_strerror(),
-			    str_endpoint(&this_client->addr, &s),
-			    str_endpoint(&that_client->addr, &d),
-			    pfkey_seq);
+		     "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=eroute", ret,
+		     ipsec_strerror(),
+		     str_selector(src_client, &s),
+		     str_selector(dst_client, &d),
+		     pfkey_seq);
 		return false;
 	}
 	return true;
@@ -438,12 +443,12 @@ static bool bsdkame_raw_eroute(const ip_address *this_host,
  * If negotiation has failed, the choice between %trap/%pass/%drop/%reject
  * is specified in the policy of connection c.
  */
-static bool bsdkame_shunt_eroute(const struct connection *c,
+static bool bsdkame_shunt_policy(enum kernel_policy_op op,
+				 const struct connection *c,
 				 const struct spd_route *sr,
 				 enum routing_t rt_kind,
-				 enum pluto_sadb_operations op,
 				 const char *opname,
-                                 struct logger *logger)
+				 struct logger *logger)
 {
 	ipsec_spi_t spi =
 		shunt_policy_spi(c, rt_kind == RT_ROUTED_PROSPECTIVE);
@@ -453,23 +458,23 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 	case 0:
 		/* we're supposed to end up with no eroute: rejig op and opname */
 		switch (op) {
-		case ERO_REPLACE:
+		case KP_REPLACE_OUTBOUND:
 			/* replace with nothing == delete */
-			op = ERO_DELETE;
+			op = KP_DELETE_OUTBOUND;
 			opname = "delete";
 			break;
-		case ERO_ADD:
+		case KP_ADD_OUTBOUND:
 			/* add nothing == do nothing */
 			return TRUE;
 
-		case ERO_DELETE:
+		case KP_DELETE_OUTBOUND:
 			/* delete remains delete */
 			break;
 
-		case ERO_ADD_INBOUND:
+		case KP_ADD_INBOUND:
 			break;
 
-		case ERO_DEL_INBOUND:
+		case KP_DELETE_INBOUND:
 			break;
 
 		default:
@@ -491,7 +496,7 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		break;
 
 	default:
-		DBG_log("shunt_eroute called with spi=%08x", spi);
+		dbg("shunt_policy() called with spi=%08x", spi);
 	}
 
 	if (sr->routing == RT_ROUTED_ECLIPSED && c->kind == CK_TEMPLATE) {
@@ -500,45 +505,47 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		 */
 		passert(eclipsable(sr));
 		switch (op) {
-		case ERO_REPLACE:
+		case KP_REPLACE_OUTBOUND:
 			/* really an add */
-			op = ERO_ADD;
+			op = KP_ADD_OUTBOUND;
 			opname = "replace eclipsed";
 			eclipse_count--;
 			break;
 
-		case ERO_DELETE:
+		case KP_DELETE_OUTBOUND:
 			/* delete unnecessary: we don't actually have an eroute */
 			eclipse_count--;
 			return TRUE;
 
-		case ERO_ADD:
+		case KP_ADD_OUTBOUND:
 		default:
 			bad_case(op);
 		}
-	} else if (eclipse_count > 0 && op == ERO_DELETE && eclipsable(sr)) {
+	} else if (eclipse_count > 0 && op == KP_DELETE_OUTBOUND && eclipsable(sr)) {
 		/* maybe we are uneclipsing something */
 		struct spd_route *esr;
 		const struct connection *ue = eclipsed(c, &esr);
 
 		if (ue != NULL) {
 			esr->routing = RT_ROUTED_PROSPECTIVE;
-			return bsdkame_shunt_eroute(ue, esr,
+			return bsdkame_shunt_policy(KP_REPLACE_OUTBOUND,
+						    ue, esr,
 						    RT_ROUTED_PROSPECTIVE,
-						    ERO_REPLACE,
 						    "restoring eclipsed",
-                                                    logger);
+						    logger);
 		}
 	}
 
 	switch (op) {
-	case ERO_REPLACE:
-	case ERO_ADD:
+	case KP_REPLACE_OUTBOUND:
+	case KP_ADD_OUTBOUND:
 	{
-		const ip_selector *mine   = &sr->this.client;
-		const ip_selector *peers    = &sr->that.client;
-		ip_sockaddr saddr = sockaddr_from_endpoint(&mine->addr);
-		ip_sockaddr daddr = sockaddr_from_endpoint(&peers->addr);
+		const ip_selector mine = sr->this.client;
+		const ip_selector peers = sr->that.client;
+		ip_sockaddr saddr = sockaddr_from_address_port(selector_prefix(mine),
+							       selector_port(mine));
+		ip_sockaddr daddr = sockaddr_from_address_port(selector_prefix(peers),
+							       selector_port(peers));
 		char pbuf[512];
 		char buf2[256];
 		struct sadb_x_policy *policy_struct =
@@ -552,14 +559,6 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 
 		zero(&pbuf);	/* OK: no pointer fields */
 
-		/* XXX need to fix this for v6 */
-#if 1
-		dbg("blatting mine/peers sin_len");
-#else
-		mine->addr.u.v4.sin_len  = sizeof(struct sockaddr_in);
-		peers->addr.u.v4.sin_len   = sizeof(struct sockaddr_in);
-#endif
-
 		passert(policy != -1);
 
 		policy_struct->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
@@ -570,8 +569,8 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		policylen = sizeof(*policy_struct);
 
 		if (policy == IPSEC_POLICY_IPSEC) {
-			ip_sockaddr local_sa = sockaddr_from_address(&sr->this.host_addr);
-			ip_sockaddr remote_sa = sockaddr_from_address(&sr->that.host_addr);
+			ip_sockaddr local_sa = sockaddr_from_address(sr->this.host_addr);
+			ip_sockaddr remote_sa = sockaddr_from_address(sr->that.host_addr);
 
 			ir = (struct sadb_x_ipsecrequest *)&policy_struct[1];
 
@@ -613,8 +612,8 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		pfkey_seq++;
 		dbg("calling pfkey_send_spdadd() from %s", __func__);
 		ret = pfkey_send_spdadd(pfkeyfd,
-					&saddr.sa.sa, mine->maskbits,
-					&daddr.sa.sa, peers->maskbits,
+					&saddr.sa.sa, selector_prefix_bits(mine),
+					&daddr.sa.sa, selector_prefix_bits(peers),
 					255 /* proto */,
 					(caddr_t)policy_struct, policylen,
 					pfkey_seq);
@@ -622,25 +621,27 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		bsdkame_consume_pfkey(pfkeyfd, pfkey_seq);
 
 		if (ret < 0) {
-			endpoint_buf s, d;
+			selector_buf s, d;
 			llog(RC_LOG, logger,
-                                    "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=%s",
-                                    ret, ipsec_strerror(),
-				    str_endpoint(&mine->addr, &s),
-				    str_endpoint(&peers->addr, &d),
-				    pfkey_seq, opname);
+			     "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=%s",
+			     ret, ipsec_strerror(),
+			     str_selector(&mine, &s),
+			     str_selector(&peers, &d),
+			     pfkey_seq, opname);
 			return FALSE;
 		}
 		return TRUE;
 	}
 
-	case ERO_DELETE:
+	case KP_DELETE_OUTBOUND:
 	{
 		/* need to send a delete message */
-		const ip_subnet *mine   = &sr->this.client;
-		const ip_subnet *peers    = &sr->that.client;
-		ip_sockaddr saddr = sockaddr_from_endpoint(&mine->addr);
-		ip_sockaddr daddr = sockaddr_from_endpoint(&peers->addr);
+		const ip_selector mine = sr->this.client;
+		const ip_selector peers = sr->that.client;
+		ip_sockaddr saddr = sockaddr_from_address_port(selector_prefix(mine),
+							       selector_port(mine));
+		ip_sockaddr daddr = sockaddr_from_address_port(selector_prefix(peers),
+							       selector_port(peers));
 		char pbuf[512];
 		char buf2[256];
 		struct sadb_x_policy *policy_struct =
@@ -652,14 +653,6 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 
 		snprintf(buf2, sizeof(buf2),
 			 "eroute_connection %s", opname);
-
-		/* XXX need to fix this for v6 */
-#if 1
-		dbg("blatting mine/peers sin_len");
-#else
-		mine->addr.u.v4.sin_len  = sizeof(struct sockaddr_in);
-		peers->addr.u.v4.sin_len   = sizeof(struct sockaddr_in);
-#endif
 
 		policy_struct->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
 
@@ -675,8 +668,8 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		pfkey_seq++;
 		dbg("calling pfkey_send_spddelete() from %s", __func__);
 		ret = pfkey_send_spddelete(pfkeyfd,
-					   &saddr.sa.sa, mine->maskbits,
-					   &daddr.sa.sa, peers->maskbits,
+					   &saddr.sa.sa, selector_prefix_bits(mine),
+					   &daddr.sa.sa, selector_prefix_bits(peers),
 					   255 /* proto */,
 					   (caddr_t)policy_struct, policylen,
 					   pfkey_seq);
@@ -684,124 +677,32 @@ static bool bsdkame_shunt_eroute(const struct connection *c,
 		bsdkame_consume_pfkey(pfkeyfd, pfkey_seq);
 
 		if (ret < 0) {
-			endpoint_buf s, d;
+			selector_buf s, d;
 			llog(RC_LOG, logger,
-                                    "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=%s",
-                                    ret, ipsec_strerror(),
-				    str_endpoint(&mine->addr, &s),
-				    str_endpoint(&peers->addr, &d),
-				    pfkey_seq, opname);
+			     "ret = %d from send_spdadd: %s addr=%s/%s seq=%u opname=%s",
+			     ret, ipsec_strerror(),
+			     str_selector(&mine, &s),
+			     str_selector(&peers, &d),
+			     pfkey_seq, opname);
 			return FALSE;
 		}
 		return TRUE;
 
 		break;
 	}
-	case ERO_ADD_INBOUND:
-	case ERO_REPLACE_INBOUND:
-	case ERO_DEL_INBOUND:
+	case KP_ADD_INBOUND:
+	case KP_REPLACE_INBOUND:
+	case KP_DELETE_INBOUND:
 		bad_case(op);
 	}
 	return FALSE;
 }
 
-/*
- * install or remove eroute for SA Group
- * must just install the appropriate SPD entries, as the
- * SA has already been negotiated, either due to manual intervention,
- * or because we are the responder.
- *
- * Funny thing about KAME/BSD, we don't actually need to know the state
- * information to install the policy, since they are not strongly linked.
- *
- */
-static bool bsdkame_sag_eroute(const struct state *st,
-			       const struct spd_route *sr,
-			       enum pluto_sadb_operations op UNUSED,
-			       const char *opname UNUSED)
-{
-	const struct ip_protocol *proto;
-
-	dbg("sag eroute called");
-
-	/*
-	 * figure out the SPI and protocol (in two forms)
-	 * for the innermost transformation.
-	 */
-	struct pfkey_proto_info proto_info[4] = { { .proto = 0, }, };
-	bool tunnel = false;
-	int i = elemsof(proto_info) - 1;
-	proto_info[i].proto = 0; /*sentinel entry*/
-
-	if (st->st_ah.present) {
-		i--;
-		proto = &ip_protocol_ah;
-		proto_info[i].proto = IPPROTO_AH;
-		proto_info[i].mode = st->st_ah.attrs.mode;
-		tunnel |= proto_info[i].mode ==
-			ENCAPSULATION_MODE_TUNNEL;
-		proto_info[i].reqid = reqid_ah(sr->reqid);
-	}
-
-	if (st->st_esp.present) {
-		i--;
-		proto = &ip_protocol_esp;
-		proto_info[i].proto = IPPROTO_ESP;
-		proto_info[i].mode = st->st_esp.attrs.mode;
-		tunnel |= proto_info[i].mode ==
-			ENCAPSULATION_MODE_TUNNEL;
-		proto_info[i].reqid = reqid_esp(sr->reqid);
-	}
-
-	if (st->st_ipcomp.present) {
-		i--;
-		proto = &ip_protocol_comp;
-		proto_info[i].proto = ip_protocol_comp.ipproto;
-		proto_info[i].mode =
-			st->st_ipcomp.attrs.mode;
-		tunnel |= proto_info[i].mode ==
-			ENCAPSULATION_MODE_TUNNEL;
-		proto_info[i].reqid = reqid_ipcomp(sr->reqid);
-	}
-
-	/* check for no transform at all */
-	passert(st->st_ipcomp.present || st->st_esp.present ||
-			st->st_ah.present);
-
-	if (tunnel) {
-		proto = &ip_protocol_ipip;
-		int j;
-		proto_info[i].mode = ENCAPSULATION_MODE_TUNNEL;
-		for (j = i + 1; proto_info[j].proto; j++)
-			proto_info[j].mode =
-				ENCAPSULATION_MODE_TRANSPORT;
-	}
-
-	return bsdkame_raw_eroute(&sr->this.host_addr,
-				  &sr->this.client,
-				  &sr->that.host_addr,
-				  &sr->that.client,
-				  SPI_TRAP,	/* cur_spi */
-				  0,		/* new_spi */
-				  proto,
-				  sr->this.protocol,
-				  0,            /* esatype unused */
-				  proto_info + i,  /* first filled in entry */
-				  deltatime(0),            /* use lifetime unused */
-				  0,		/* sa_priority */
-				  NULL,		/* sa_marks */
-				  0,		/* xfrm_if_id */
-				  op,
-				  NULL,         /* text_said unused */
-				  NULL,		/*unused*/
-				  st->st_logger);
-}
-
 static bool bsdkame_add_sa(const struct kernel_sa *sa, bool replace,
-                           struct logger *logger)
+			   struct logger *logger)
 {
-	ip_sockaddr saddr = sockaddr_from_address(sa->src.address);
-	ip_sockaddr daddr = sockaddr_from_address(sa->dst.address);
+	ip_sockaddr saddr = sockaddr_from_address(*sa->src.address);
+	ip_sockaddr daddr = sockaddr_from_address(*sa->dst.address);
 	char keymat[256];
 	int ret, mode, satype;
 
@@ -831,9 +732,9 @@ static bool bsdkame_add_sa(const struct kernel_sa *sa, bool replace,
 	}
 
 	if ((sa->enckeylen + sa->authkeylen) > sizeof(keymat)) {
-		llog(RC_LOG, logger, 
+		llog(RC_LOG, logger,
 			    "Key material is too big for kernel interface: %d>%zu",
-                            (sa->enckeylen + sa->authkeylen),
+			    (sa->enckeylen + sa->authkeylen),
 			    sizeof(keymat));
 		return FALSE;
 	}
@@ -897,7 +798,7 @@ static bool bsdkame_add_sa(const struct kernel_sa *sa, bool replace,
 
 	if (ret < 0) {
 		llog(RC_LOG, logger,
-                            "ret = %d from add_sa: %s seq=%d", ret,
+			    "ret = %d from add_sa: %s seq=%d", ret,
 			    ipsec_strerror(), pfkey_seq);
 		return FALSE;
 	}
@@ -906,7 +807,7 @@ static bool bsdkame_add_sa(const struct kernel_sa *sa, bool replace,
 }
 
 static bool bsdkame_del_sa(const struct kernel_sa *sa UNUSED,
-                           struct logger *logger UNUSED)
+				   struct logger *logger UNUSED)
 {
 	return TRUE;
 }
@@ -921,13 +822,6 @@ static bool bsdkame_was_eroute_idle(struct state *st UNUSED,
 {
 	passert(FALSE);
 	return FALSE;
-}
-
-static void bsdkame_remove_orphaned_holds(int transport_proto UNUSED,
-					  const ip_subnet *ours UNUSED,
-					  const ip_subnet *peers UNUSED)
-{
-	passert(FALSE);
 }
 
 static bool bsdkame_except_socket(int socketfd, int family, struct logger *logger)
@@ -971,7 +865,7 @@ static bool bsdkame_except_socket(int socketfd, int family, struct logger *logge
 }
 
 static bool bsdkame_detect_offload(const struct raw_iface *ifp UNUSED,
-                                   struct logger *logger UNUSED)
+				   struct logger *logger UNUSED)
 {
 	dbg("%s: nothing to do", __func__);
 	return false;
@@ -985,9 +879,8 @@ const struct kernel_ops bsdkame_kernel_ops = {
 	.pfkey_register = bsdkame_pfkey_register,
 	.process_queue = bsdkame_dequeue,
 	.process_msg = bsdkame_process_msg,
-	.raw_eroute = bsdkame_raw_eroute,
-	.shunt_eroute = bsdkame_shunt_eroute,
-	.sag_eroute = bsdkame_sag_eroute,
+	.raw_policy = bsdkame_raw_policy,
+	.shunt_policy = bsdkame_shunt_policy,
 	.add_sa = bsdkame_add_sa,
 	.grp_sa = NULL,
 	.del_sa = bsdkame_del_sa,
@@ -996,7 +889,6 @@ const struct kernel_ops bsdkame_kernel_ops = {
 	.init = bsdkame_init_pfkey,
 	.shutdown = NULL,
 	.exceptsocket = bsdkame_except_socket,
-	.remove_orphaned_holds = bsdkame_remove_orphaned_holds,
 	.process_raw_ifaces = bsdkame_process_raw_ifaces,
 	.overlap_supported = FALSE,
 	.sha2_truncbug_support = FALSE,

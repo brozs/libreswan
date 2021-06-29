@@ -3,7 +3,7 @@ west #
  ipsec start
 Redirecting to: [initsystem]
 west #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 west #
  ipsec whack --impair revival
 west #
@@ -55,17 +55,14 @@ west #
 1v2 "west" #1: initiating IKEv2 connection
 1v2 "west" #1: sent IKE_SA_INIT request
 1v2 "west" #1: sent IKE_AUTH request {auth=IKEv2 cipher=AES_GCM_16_256 integ=n/a prf=HMAC_SHA2_512 group=MODP2048}
-002 "west" #1: IKEv2 mode peer ID is ID_FQDN: '@east'
-003 "west" #1: authenticated using authby=secret
+003 "west" #1: authenticated using authby=secret and peer ID_FQDN '@east'
 002 "west" #2: negotiated connection [192.1.2.45-192.1.2.45:0-65535 0] -> [192.1.2.23-192.1.2.23:0-65535 0]
 004 "west" #2: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
 west #
- # ../../pluto/bin/ping-once.sh ...?
+ # ../../guestbin/ping-once.sh ...?
 west #
- taskset 0x3 ping -w 3 -n -c 2 192.1.2.23
+ taskset 0x3 ping -n -q -w 3 -c 2 192.1.2.23
 PING 192.1.2.23 (192.1.2.23) 56(84) bytes of data.
-64 bytes from 192.1.2.23: icmp_seq=1 ttl=64 time=0.XXX ms
-64 bytes from 192.1.2.23: icmp_seq=2 ttl=64 time=0.XXX ms
 --- 192.1.2.23 ping statistics ---
 2 packets transmitted, 2 received, 0% packet loss, time XXXX
 rtt min/avg/max/mdev = 0.XXX/0.XXX/0.XXX/0.XXX ms
@@ -89,11 +86,14 @@ west #
 west #
  ipsec whack --rekey-ipsec --name west
 1v2 "west" #4: sent CREATE_CHILD_SA request to rekey IPsec SA
-031 "west" #4: STATE_V2_REKEY_CHILD_I1: 60 second timeout exceeded after 0 retransmits.  No response (or no acceptable response) to our IKEv2 message
-002 "west" #4: liveness action - putting connection into hold
+031 "west" #1: STATE_V2_ESTABLISHED_IKE_SA: 60 second timeout exceeded after 0 retransmits.  No response (or no acceptable response) to our IKEv2 message
+002 "west" #1: liveness action - putting connection into hold
 002 "west" #4: deleting state (STATE_V2_REKEY_CHILD_I1) and NOT sending notification
+003 "west" #4: ERROR: netlink response for Del SA esp.ESPSPIi@192.1.2.45 included errno 3: No such process
 002 "west" #3: deleting state (STATE_V2_ESTABLISHED_CHILD_SA) and sending notification
 005 "west" #3: ESP traffic information: in=0B out=0B
+002 "west" #1: deleting state (STATE_V2_ESTABLISHED_IKE_SA) and sending notification
+002 "west" #1: IMPAIR: skipping revival of connection that is supposed to remain up
 west #
  # this rekey, 3 #5, message will not be sent, #1.#5
 west #
@@ -112,9 +112,5 @@ west #
  ipsec whack --trafficstatus
 west #
  # policies and state should be multiple
-west #
- ../bin/check-for-core.sh
-west #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 west #
  

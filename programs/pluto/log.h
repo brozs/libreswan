@@ -57,16 +57,6 @@ extern bool log_to_syslog;          /* should log go to syslog? */
 extern char *pluto_log_file;
 extern char *pluto_stats_binary;
 
-/* Context for logging.
- *
- * Global variables: must be carefully adjusted at transaction boundaries!
- * All are to be left in RESET condition and will be checked.
- * There are several pairs of routines to set and reset them.
- * If the context provides a whack file descriptor, messages
- * should be copied to it -- see whack_log()
- */
-extern struct fd *whack_log_fd;           /* only set during whack_handle() */
-
 extern bool whack_prompt_for(struct state *st, const char *prompt,
 			     bool echo, char *ansbuf, size_t ansbuf_len);
 
@@ -82,9 +72,6 @@ extern const struct logger_object_vec logger_from_vec;
 extern const struct logger_object_vec logger_message_vec;
 extern const struct logger_object_vec logger_connection_vec;
 extern const struct logger_object_vec logger_state_vec;
-extern const struct logger_object_vec logger_string_vec;
-
-extern struct logger failsafe_logger;
 
 struct logger *string_logger(struct fd *whackfd, where_t where, const char *fmt, ...)
 	PRINTF_LIKE(3) MUST_USE_RESULT; /* must free */
@@ -112,17 +99,6 @@ void free_logger(struct logger **logp, where_t where);
 	}
 
 /*
- * Log with no context.
- */
-
-#define log_global(RC, WHACKFD, MESSAGE, ...)				\
-	{								\
-		struct logger log_ = GLOBAL_LOGGER(WHACKFD);		\
-		llog(RC,	&log_,					\
-			    MESSAGE,##__VA_ARGS__);			\
-	}
-
-/*
  * Log with a connection context.
  *
  * Unlike state and pending, connections do not have an attached
@@ -137,12 +113,12 @@ void log_pending(lset_t rc_flags, const struct pending *p,
 		 const char *msg, ...) PRINTF_LIKE(3);
 
 /*
- * log the state; notice how it still needs to pick up the global
- * whackfd.
+ * Log the state.
  */
 
 void log_state(lset_t rc_flags, const struct state *st,
 	       const char *msg, ...) PRINTF_LIKE(3);
+#define llog_sa(RC_FLAGS, SA, MSG, ...) llog(RC_FLAGS, (SA)->sa.st_logger, MSG, ##__VA_ARGS__)
 
 /*
  * Wrappers.
@@ -169,13 +145,11 @@ void rate_log(const struct msg_digest *md,
  * name).  If that's really really needed then use
  * log_*(WHACK_STREAM,...) above.
  *
- * whack_comment() output includes the '000 ' prefix (RC_COMMENT).  It
  * also requires a valid whackfd.  It should only be used by show
  * commands.
  */
 
 void whack_log(enum rc_type rc, const struct fd *whackfd, const char *message, ...) PRINTF_LIKE(3);
-void whack_comment(const struct fd *whackfd, const char *message, ...) PRINTF_LIKE(2);
 
 extern void show_status(struct show *s);
 extern void show_setup_plutomain(struct show *s);
@@ -207,19 +181,17 @@ extern void linux_audit_init(int do_audit, struct logger *logger);
 # endif
 #endif
 
-void jambuf_to_default_streams(struct jambuf *buf, enum rc_type rc);
-
 #define LSWLOG_DEBUG(BUF)					\
 	JAMBUF(BUF)						\
 		/* no-prefix */					\
 		for (; BUF != NULL;				\
-		     jambuf_to_debug_stream(BUF), BUF = NULL)
+		     jambuf_to_logger(BUF, &failsafe_logger, DEBUG_STREAM), BUF = NULL)
 
 #define LSWDBGP(DEBUG, BUF)						\
 	for (bool lswlog_p = DBGP(DEBUG); lswlog_p; lswlog_p = false)	\
 		JAMBUF(BUF)						\
 			/* no-prefix */					\
 			for (; BUF != NULL;				\
-			     jambuf_to_debug_stream(BUF), BUF = NULL)
+			     jambuf_to_logger(BUF, &failsafe_logger, DEBUG_STREAM), BUF = NULL)
 
 #endif /* _PLUTO_LOG_H */

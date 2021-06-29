@@ -37,6 +37,7 @@
 #include "log.h"
 #include "state.h"
 #include "ikev2.h"
+#include "ikev2_ike_sa_init.h"
 
 /*
  * That the cookie size of 32-bytes happens to match
@@ -74,7 +75,7 @@ static bool compute_v2_cookie_from_md(v2_cookie_t *cookie,
 
 	crypt_hash_digest_hunk(ctx, "Ni", Ni);
 
-	ip_address sender = endpoint_address(&md->sender);
+	ip_address sender = endpoint_address(md->sender);
 	shunk_t IPi = address_as_shunk(&sender);
 	crypt_hash_digest_hunk(ctx, "IPi", IPi);
 
@@ -109,7 +110,7 @@ bool v2_rejected_initiator_cookie(struct msg_digest *md,
 	    pexpect(md->chain[ISAKMP_NEXT_v2N] != NULL) &&
 	    md->chain[ISAKMP_NEXT_v2N]->payload.v2n.isan_type == v2N_COOKIE) {
 		cookie_digest = md->chain[ISAKMP_NEXT_v2N];
-		pexpect(&cookie_digest->pbs == md->pbs[PBS_v2N_COOKIE]);
+		pexpect(cookie_digest == md->pd[PD_v2N_COOKIE]);
 	}
 	if (!me_want_cookie && cookie_digest == NULL) {
 		dbg("DDOS disabled and no cookie sent, continuing");
@@ -137,7 +138,7 @@ bool v2_rejected_initiator_cookie(struct msg_digest *md,
 	}
 	shunk_t Ni = pbs_in_left_as_shunk(&md->chain[ISAKMP_NEXT_v2Ni]->pbs);
 	if (Ni.len < IKEv2_MINIMUM_NONCE_SIZE || IKEv2_MAXIMUM_NONCE_SIZE < Ni.len) {
-		rate_log(md, "DOS cookie failed as Ni payload invalid  - dropping message");
+		rate_log(md, "DOS cookie failed as Ni payload invalid - dropping message");
 		return true; /* reject cookie */
 	}
 
@@ -146,7 +147,7 @@ bool v2_rejected_initiator_cookie(struct msg_digest *md,
 	if (!compute_v2_cookie_from_md(&my_cookie, md, Ni)) {
 		return true; /* reject cookie */
 	}
-	chunk_t local_cookie = chunk2(&my_cookie, sizeof(my_cookie));
+	shunk_t local_cookie = shunk2(&my_cookie, sizeof(my_cookie));
 
 	/* No cookie? demand one */
 	if (me_want_cookie && cookie_digest == NULL) {
@@ -157,9 +158,7 @@ bool v2_rejected_initiator_cookie(struct msg_digest *md,
 
 	/* done: !me_want_cookie && cookie_digest == NULL */
 	/* done: me_want_cookie && cookie_digest == NULL */
-	if (!pexpect(cookie_digest != NULL)) {
-		return true; /* reject cookie */
-	}
+	passert(cookie_digest != NULL);
 
 	/*
 	 * Check that the cookie notification is well constructed.
@@ -204,10 +203,10 @@ stf_status ikev2_in_IKE_SA_INIT_R_v2N_COOKIE(struct ike_sa *ike,
 					     struct msg_digest *md)
 {
 	pexpect(child == NULL);
-	const struct pbs_in *cookie_pbs = md->pbs[PBS_v2N_COOKIE];
-	if (!pexpect(cookie_pbs != NULL)) {
+	if (!pexpect(md->pd[PD_v2N_COOKIE] != NULL)) {
 		return STF_INTERNAL_ERROR;
 	}
+	const struct pbs_in *cookie_pbs = &md->pd[PD_v2N_COOKIE]->pbs;
 
 	/*
 	 * Responder replied with N(COOKIE) for DOS avoidance.  See

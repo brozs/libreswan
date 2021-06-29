@@ -52,6 +52,9 @@
  * XXX: This functionality totally overlaps both "initiate" and
  * "pending" and should be merged (however, this simple code might
  * prove to be a better starting point).
+ *
+ * XXX: during shutdown delete_all_connections() should flush any
+ * outstanding revivals; hence no need to free revivals.
  */
 
 struct revival {
@@ -123,6 +126,11 @@ void add_revival_if_needed(struct state *st)
 
 	if (exiting_pluto) {
 		dbg("skilling revival: pluto is going down");
+		return;
+	}
+
+	if (c->ike_version == IKEv2 && c->spd.this.sec_label.len > 0) {
+		dbg("skipped revival: childless IKE SA");
 		return;
 	}
 
@@ -206,10 +214,6 @@ static void revive_conns(struct logger *logger)
 	/*
 	 * XXX: Revive all listed connections regardless of their
 	 * DELAY.  See note above in add_revival().
-	 *
-	 * XXX: since this is called from the event loop, the global
-	 * whack_log_fd is invalid so specifying RC isn't exactly
-	 * useful.
 	 */
 	dbg("revive_conns() called");
 	while (revivals != NULL) {
@@ -238,11 +242,4 @@ static void revive_conns(struct logger *logger)
 void init_revival(void)
 {
 	init_oneshot_timer(EVENT_REVIVE_CONNS, revive_conns);
-}
-
-void free_revivals(void)
-{
-	while (revivals != NULL) {
-		free_revival(&revivals);
-	}
 }

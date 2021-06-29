@@ -442,8 +442,8 @@ static const char *const exchange_name_ikev2[] = {
 };
 
 static const char *const exchange_name_private_use[] = {
-	"ISAKMP_XCHG_ECHOREQUEST_PRIVATE",	/* 244 - Used by libreswan  */
-	"ISAKMP_XCHG_ECHOREPLY_PRIVATE",	/* 245 - Used by libreswan  */
+	"ISAKMP_XCHG_ECHOREQUEST_PRIVATE",	/* 244 - Used by libreswan */
+	"ISAKMP_XCHG_ECHOREPLY_PRIVATE",	/* 245 - Used by libreswan */
 };
 
 static enum_names exchange_names_private_use = {
@@ -532,6 +532,7 @@ static const char *const sit_bit_name[] = {
 	P(SIT_IDENTITY_ONLY),
 	P(SIT_SECRECY),
 	P(SIT_INTEGRITY),
+#undef P
 };
 
 const struct enum_names sit_bit_names = {
@@ -599,9 +600,9 @@ static const char *const ah_transform_name[] = {
 	"AH_RIPEMD",
 	"AH_AES_XCBC_MAC",
 	"AH_RSA(UNUSED)",
-	"AH_AES_128_GMAC",	/* RFC4543 Errata1821  */
-	"AH_AES_192_GMAC",	/* RFC4543 Errata1821  */
-	"AH_AES_256_GMAC",	/* RFC4543 Errata1821  */
+	"AH_AES_128_GMAC",	/* RFC4543 Errata1821 */
+	"AH_AES_192_GMAC",	/* RFC4543 Errata1821 */
+	"AH_AES_256_GMAC",	/* RFC4543 Errata1821 */
 	/* 14-248 Unassigned */
 	/* 249-255 Reserved for private use */
 };
@@ -705,12 +706,12 @@ enum_names ipcomp_transformid_names = {
  * https://www.iana.org/assignments/ikev2-parameters/ikev2-parameters.xhtml#hash-algorithms
  */
 static const char *const ikev2_hash_algorithm_name[] = {
-        "IKEv2_HASH_ALGORITHM_RESERVED",
-        "IKEv2_HASH_ALGORITHM_SHA1",
-        "IKEv2_HASH_ALGORITHM_SHA2_256",
-        "IKEv2_HASH_ALGORITHM_SHA2_384",
-        "IKEv2_HASH_ALGORITHM_SHA2_512",
-        "IKEv2_HASH_ALGORITHM_IDENTITY"
+	"IKEv2_HASH_ALGORITHM_RESERVED",
+	"IKEv2_HASH_ALGORITHM_SHA1",
+	"IKEv2_HASH_ALGORITHM_SHA2_256",
+	"IKEv2_HASH_ALGORITHM_SHA2_384",
+	"IKEv2_HASH_ALGORITHM_SHA2_512",
+	"IKEv2_HASH_ALGORITHM_IDENTITY"
 	/* 6-1023 Unassigned */
 };
 
@@ -759,21 +760,23 @@ static const char *const ike_idtype_name[] = {
 	}
 
 /* IKEv1 */
-enum_names ike_idtype_names = ID_NR(ID_IPV4_ADDR, ID_NULL, NULL);
+enum_names ikev1_ike_id_type_names = ID_NR(ID_IPV4_ADDR, ID_NULL, NULL);
 
 /*
  * all names, including private-to-pluto
  * Tricky: lower bound and uppers bound are treated as unsigned long
  * so we have to tack two ranges onto ike_idtype_names.
+ *
+ * XXX: why not treat them as longs?
  */
-enum_names ike_idtype_names_extended0 = ID_NR(ID_NONE, ID_NONE, &ike_idtype_names);
-enum_names ike_idtype_names_extended = ID_NR(ID_FROMCERT, ID_FROMCERT, &ike_idtype_names_extended0);
+static enum_names ike_idtype_names_fromcert = ID_NR(ID_FROMCERT, ID_FROMCERT, NULL);
+enum_names ike_id_type_names = ID_NR(ID_NONE, ID_NULL, &ike_idtype_names_fromcert);
 
 /* IKEv2 names exclude ID_IPV4_ADDR_SUBNET, ID_IPV6_ADDR_SUBNET-ID_IPV6_ADDR_RANGE */
 
 static enum_names ikev2_idtype_names_3 = ID_NR(ID_DER_ASN1_DN, ID_NULL,	NULL);
 static enum_names ikev2_idtype_names_2 = ID_NR(ID_IPV6_ADDR, ID_IPV6_ADDR, &ikev2_idtype_names_3);
-enum_names ikev2_idtype_names = ID_NR(ID_IPV4_ADDR, ID_RFC822_ADDR, &ikev2_idtype_names_2);
+enum_names ikev2_ike_id_type_names = ID_NR(ID_IPV4_ADDR, ID_RFC822_ADDR, &ikev2_idtype_names_2);
 
 #undef ID_NR
 
@@ -1025,7 +1028,7 @@ enum_names *const ipsec_attr_val_descs[] = {
 	&sa_lifetime_names,	/* SA_LIFE_TYPE */
 	NULL,	/* SA_LIFE_DURATION */
 	&oakley_group_names,	/* GROUP_DESCRIPTION */
-	&enc_mode_names,	/* ENCAPSULATION_MODE */
+	&encapsulation_mode_names,
 	&auth_alg_names,	/* AUTH_ALGORITHM */
 	NULL,	/* KEY_LENGTH */
 	NULL,	/* KEY_ROUNDS */
@@ -1053,32 +1056,37 @@ enum_names sa_lifetime_names = {
 };
 
 /* Encapsulation Mode attribute */
-static const char *const enc_rfc_mode_name[] = {
-	"ENCAPSULATION_MODE_TUNNEL",
-	"ENCAPSULATION_MODE_TRANSPORT",
-	"ENCAPSULATION_MODE_UDP_TUNNEL_RFC",
-	"ENCAPSULATION_MODE_UDP_TRANSPORT_RFC",
+
+static const char *const encapsulation_mode_draft_name[] = {
+#define P(N) [N - ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS] = #N
+	P(ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS),
+	P(ENCAPSULATION_MODE_UDP_TRANSPORT_DRAFTS),
+#undef P
 };
 
-static const char *const enc_draft_mode_name[] = {
-	"ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS",
-	"ENCAPSULATION_MODE_UDP_TRANSPORT_DRAFTS",
-};
-
-static enum_names enc_rfc_mode_names = {
-	ENCAPSULATION_MODE_TUNNEL,
-	ENCAPSULATION_MODE_UDP_TRANSPORT_RFC,
-	ARRAY_REF(enc_rfc_mode_name),
-	NULL, /* prefix */
-	NULL
-};
-
-enum_names enc_mode_names = {
+enum_names encapsulation_mode_draft_names = {
 	ENCAPSULATION_MODE_UDP_TUNNEL_DRAFTS,
 	ENCAPSULATION_MODE_UDP_TRANSPORT_DRAFTS,
-	ARRAY_REF(enc_draft_mode_name),
-	NULL, /* prefix */
-	&enc_rfc_mode_names
+	ARRAY_REF(encapsulation_mode_draft_name),
+	"ENCAPSULATION_MODE_", /* prefix */
+	NULL,
+};
+
+static const char *const encapsulation_mode_rfc_name[] = {
+#define P(N) [N - ENCAPSULATION_MODE_TUNNEL] = #N
+	P(ENCAPSULATION_MODE_TUNNEL),
+	P(ENCAPSULATION_MODE_TRANSPORT),
+	P(ENCAPSULATION_MODE_UDP_TUNNEL_RFC),
+	P(ENCAPSULATION_MODE_UDP_TRANSPORT_RFC),
+#undef P
+};
+
+enum_names encapsulation_mode_names = {
+	ENCAPSULATION_MODE_TUNNEL,
+	ENCAPSULATION_MODE_UDP_TRANSPORT_RFC,
+	ARRAY_REF(encapsulation_mode_rfc_name),
+	"ENCAPSULATION_MODE_", /* prefix */
+	&encapsulation_mode_draft_names,
 };
 
 /* Auth Algorithm attribute */
@@ -1101,7 +1109,7 @@ static enum_names auth_alg_names_stolen_use = {
 	NULL
 };
 
-/* these string names map via a lookup function to configuration sttrings */
+/* these string names map via a lookup function to configuration strings */
 static const char *const auth_alg_name[] = {
 	"AUTH_ALGORITHM_NONE",	/* our own value, not standard */
 	"AUTH_ALGORITHM_HMAC_MD5",
@@ -1149,7 +1157,7 @@ enum_names xauth_type_names = {
 	NULL
 };
 
-/* IKEv1 XAUTH-STATUS attribute names  */
+/* IKEv1 XAUTH-STATUS attribute names */
 static const char *const modecfg_attr_name_draft[] = {
 	"INTERNAL_IP4_ADDRESS",	/* 1 */
 	"INTERNAL_IP4_NETMASK",
@@ -1352,7 +1360,7 @@ enum_names oakley_enc_names = {
  * https://www.iana.org/assignments/ipsec-registry/ipsec-registry.xhtml#ipsec-registry-6
  */
 
-/* these string names map via a lookup function to configuration sttrings */
+/* these string names map via a lookup function to configuration strings */
 static const char *const oakley_hash_name[] = {
 	/* 0 - RESERVED */
 	"OAKLEY_MD5",
@@ -1522,7 +1530,7 @@ enum_names ikev2_auth_names = {
  * be differences we need to care about)
  */
 
-/* these string names map via a lookup function to configuration sttrings */
+/* these string names map via a lookup function to configuration strings */
 static const char *const oakley_group_name[] = {
 	"OAKLEY_GROUP_NONE", /* 0! RFC 7296 */
 	"OAKLEY_GROUP_MODP768",
@@ -2203,20 +2211,48 @@ enum_names ikev2_redirect_gw_names = {
 	NULL
 };
 
-/* magic SPI values (specific to Libreswan: see <libreswan.h>) */
-static const char *const spi_name[] = {
+/* magic SPI values (specific to Libreswan */
+
+static const char *const policy_spi_name[] = {
 	"%pass",
 	"%drop",
 	"%reject",
 	"%hold",
 	"%trap",
+	"%ignore",
 	"%trapsubnet",
 };
-enum_names spi_names = {
+
+enum_names policy_spi_names = {
 	SPI_PASS, SPI_TRAPSUBNET,
-	ARRAY_REF(spi_name),
+	ARRAY_REF(policy_spi_name),
 	"%",	/* prefix */
 	NULL
+};
+
+/*
+ * enum global_timers
+ */
+static const char *global_timer_name[] = {
+#define E(T) [T] = #T
+	E(EVENT_REINIT_SECRET),
+	E(EVENT_SHUNT_SCAN),
+	E(EVENT_PENDING_DDNS),
+	E(EVENT_SD_WATCHDOG),
+	E(EVENT_PENDING_PHASE2),
+	E(EVENT_CHECK_CRLS),
+	E(EVENT_REVIVE_CONNS),
+	E(EVENT_FREE_ROOT_CERTS),
+	E(EVENT_RESET_LOG_RATE_LIMIT),
+	E(EVENT_PROCESS_KERNEL_QUEUE),
+	E(EVENT_NAT_T_KEEPALIVE),
+#undef E
+};
+const struct enum_names global_timer_names = {
+	0, elemsof(global_timer_name) - 1,
+	ARRAY_REF(global_timer_name),
+	"EVENT_",
+	NULL,
 };
 
 /*
@@ -2440,7 +2476,7 @@ int enum_match(enum_names *ed, shunk_t string)
 			if (try(true, 0, 0) ||
 			    try(suffix_len > 0, 0, suffix_len) ||
 			    try(prefix_len > 0, prefix_len, 0) ||
-			    try(suffix_len > 0 && suffix_len > 0, prefix_len, suffix_len))
+			    try(prefix_len > 0 && suffix_len > 0, prefix_len, suffix_len))
 			{
 				return en;
 			}
@@ -2567,15 +2603,15 @@ static const enum_names *en_checklist[] = {
 	&ah_transformid_names,
 	&esp_transformid_names,
 	&ipcomp_transformid_names,
-	&ike_idtype_names,
-	&ikev2_idtype_names,
+	&ikev1_ike_id_type_names,
+	&ikev2_ike_id_type_names,
 	&ike_cert_type_names,
 	&ikev2_cert_type_names,
 	&certpolicy_type_names,
 	&oakley_attr_names,
 	&ipsec_attr_names,
 	&sa_lifetime_names,
-	&enc_mode_names,
+	&encapsulation_mode_names,
 	&auth_alg_names,
 	&xauth_type_names,
 	&modecfg_attr_names,
@@ -2612,6 +2648,8 @@ static const enum_names *en_checklist[] = {
 	&ike_version_child_names,
 	&payload_flag_names,
 	&oakley_attr_bit_names,
+	&global_timer_names,
+	&policy_spi_names,
 };
 
 void check_enum_names(enum_names *checklist[], size_t tl)

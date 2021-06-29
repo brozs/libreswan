@@ -44,7 +44,7 @@ void jam_said(struct jambuf *buf, const ip_said *sa)
 	if (strcmp(pre, PASSTHROUGHTYPE) == 0 &&
 	    sa->spi == PASSTHROUGHSPI &&
 	    (address_is_unset(&sa->dst) /*short-circuit*/||
-	     address_is_any(&sa->dst))) {
+	     address_is_any(sa->dst))) {
 		jam_string(buf, (said_type(sa) == &ipv4_info ?
 				 PASSTHROUGH4NAME :
 				 PASSTHROUGH6NAME));
@@ -64,6 +64,9 @@ void jam_said(struct jambuf *buf, const ip_said *sa)
 			break;
 		case SPI_TRAP:
 			jam_string(buf, "%trap");
+			break;
+		case SPI_IGNORE:
+			jam_string(buf, "%ignore");
 			break;
 		case SPI_TRAPSUBNET:
 			jam_string(buf, "%trapsubnet");

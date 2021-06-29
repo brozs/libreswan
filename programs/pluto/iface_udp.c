@@ -161,9 +161,10 @@ static int bind_udp_socket(const struct iface_dev *ifd, ip_port port,
 	 * Old code seemed to assume that it should be reset to pluto_port.
 	 * But only on successful bind.  Seems wrong or unnecessary.
 	 */
-	ip_endpoint if_endpoint = endpoint3(&ip_protocol_udp,
-					    &ifd->id_address, port);
-	ip_sockaddr if_sa = sockaddr_from_endpoint(&if_endpoint);
+	ip_endpoint if_endpoint = endpoint_from_address_protocol_port(ifd->id_address,
+								      &ip_protocol_udp,
+								      port);
+	ip_sockaddr if_sa = sockaddr_from_endpoint(if_endpoint);
 	if (bind(fd, &if_sa.sa.sa, if_sa.len) < 0) {
 		endpoint_buf b;
 		log_errno(logger, errno, "bind() for %s %s in process_raw_ifaces()",
@@ -236,9 +237,9 @@ static bool check_msg_errqueue(const struct iface_endpoint *ifp,
 			       struct logger *logger);
 #endif
 
-static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
-					 struct iface_packet *packet,
-					 struct logger *logger)
+static enum iface_read_status udp_read_packet(struct iface_endpoint *ifp,
+					      struct iface_packet *packet,
+					      struct logger *logger)
 {
 #ifdef MSG_ERRQUEUE
 	/*
@@ -258,7 +259,7 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 		threadtime_stop(&errqueue_start, SOS_NOBODY,
 				"%s() calling check_incoming_msg_errqueue()", __func__);
 		if (!errqueue_ok) {
-			return IFACE_IGNORE; /* no normal message to read */
+			return IFACE_READ_IGNORE; /* no normal message to read */
 		}
 	}
 #endif
@@ -282,8 +283,9 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 	 * If that fails report some sense of error and then always
 	 * give up.
 	 */
-	const char *from_ugh = sockaddr_to_endpoint(&ip_protocol_udp, &from,
-						    &packet->sender);
+	ip_address sender_udp_address;
+	ip_port sender_udp_port;
+	const char *from_ugh = sockaddr_to_address_port(from, &sender_udp_address, &sender_udp_port);
 	if (from_ugh != NULL) {
 		if (packet->len >= 0) {
 			/* technically it worked, but returned value was useless */
@@ -309,8 +311,13 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 				    ifp->ip_dev->id_rname, from_ugh,
 				    pri_errno(packet_errno));
 		}
-		return IFACE_IGNORE;
+		return IFACE_READ_IGNORE;
 	}
+
+	packet->sender = endpoint_from_address_protocol_port(sender_udp_address,
+							     &ip_protocol_udp,
+							     sender_udp_port);
+
 
 	/*
 	 * Managed to decode the from address; switch to a "from"
@@ -322,7 +329,7 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 	if (packet->len < 0) {
 		llog(RC_LOG, logger, "recvfrom on %s failed "PRI_ERRNO,
 			    ifp->ip_dev->id_rname, pri_errno(packet_errno));
-		return IFACE_IGNORE;
+		return IFACE_READ_IGNORE;
 	}
 
 	if (ifp->esp_encapsulation_enabled) {
@@ -331,12 +338,12 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 		if (packet->len < (int)sizeof(uint32_t)) {
 			llog(RC_LOG, logger, "too small packet (%zd)",
 				    packet->len);
-			return IFACE_IGNORE;
+			return IFACE_READ_IGNORE;
 		}
 		memcpy(&non_esp, packet->ptr, sizeof(uint32_t));
 		if (non_esp != 0) {
 			llog(RC_LOG, logger, "has no Non-ESP marker");
-			return IFACE_IGNORE;
+			return IFACE_READ_IGNORE;
 		}
 		packet->ptr += sizeof(uint32_t);
 		packet->len -= sizeof(uint32_t);
@@ -355,7 +362,7 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 			   NON_ESP_MARKER_SIZE)) {
 			llog(RC_LOG, logger,
 				    "mangled with potential spurious non-esp marker");
-			return IFACE_IGNORE;
+			return IFACE_READ_IGNORE;
 		}
 	}
 
@@ -369,10 +376,10 @@ static enum iface_status udp_read_packet(const struct iface_endpoint *ifp,
 		endpoint_buf eb;
 		dbg("NAT-T keep-alive (bogus ?) should not reach this point. Ignored. Sender: %s",
 		    str_endpoint(&packet->sender, &eb)); /* sensitive? */
-		return IFACE_IGNORE;
+		return IFACE_READ_IGNORE;
 	}
 
-	return IFACE_OK;
+	return IFACE_READ_OK;
 }
 
 static ssize_t udp_write_packet(const struct iface_endpoint *ifp,
@@ -386,25 +393,16 @@ static ssize_t udp_write_packet(const struct iface_endpoint *ifp,
 	}
 #endif
 
-	ip_sockaddr remote_sa = sockaddr_from_endpoint(remote_endpoint);
+	ip_sockaddr remote_sa = sockaddr_from_endpoint(*remote_endpoint);
 	return sendto(ifp->fd, ptr, len, 0, &remote_sa.sa.sa, remote_sa.len);
 };
-
-static void handle_udp_packet_cb(evutil_socket_t unused_fd UNUSED,
-				 const short unused_event UNUSED,
-				 void *arg)
-{
-	struct logger logger[1] = { GLOBAL_LOGGER(null_fd), }; /* event-handler */
-	const struct iface_endpoint *ifp = arg;
-	handle_packet_cb(ifp, logger);
-}
 
 static void udp_listen(struct iface_endpoint *ifp,
 		       struct logger *unused_logger UNUSED)
 {
 	if (ifp->udp_message_listener == NULL) {
 		attach_fd_read_sensor(&ifp->udp_message_listener, ifp->fd,
-				      handle_udp_packet_cb, ifp);
+				      process_iface_packet, ifp);
 	}
 }
 
@@ -688,10 +686,14 @@ static bool check_msg_errqueue(const struct iface_endpoint *ifp, short interest,
 		/* usual case :-( */
 		char fromstr[sizeof(" for message to ?") + sizeof(endpoint_buf)] = "";
 		if (afi != NULL && emh.msg_namelen == afi->sockaddr_size) {
-			ip_endpoint endpoint;
-			/* this is a udp socket so presumably the endpoint is udp */
-			if (sockaddr_to_endpoint(&ip_protocol_udp, &from, &endpoint) == NULL) {
+			ip_address sender_udp_address;
+			ip_port sender_udp_port;
+			if (sockaddr_to_address_port(from, &sender_udp_address, &sender_udp_port) == NULL) {
+				/* this is a udp socket so presumably the endpoint is udp */
 				endpoint_buf ab;
+				ip_endpoint endpoint = endpoint_from_address_protocol_port(sender_udp_address,
+											   &ip_protocol_udp,
+											   sender_udp_port);
 				snprintf(fromstr, sizeof(fromstr),
 					 " for message to %s",
 					 str_endpoint_sensitive(&endpoint, &ab));

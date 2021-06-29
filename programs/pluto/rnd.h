@@ -17,7 +17,7 @@
 #ifndef PLUTO_RND_H
 #define PLUTO_RND_H
 
-#include <stdlib.h>	/* for size_t */
+#include <stddef.h>	/* for size_t */
 
 #include "chunk.h"
 
@@ -25,6 +25,7 @@ struct logger;
 
 extern void fill_rnd_chunk(chunk_t chunk);
 extern void get_rnd_bytes(void *buffer, size_t size);
+extern chunk_t get_rnd_chunk(size_t size, const char *name);
 
 extern void init_secret(struct logger *logger);
 

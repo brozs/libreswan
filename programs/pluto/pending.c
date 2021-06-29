@@ -50,7 +50,8 @@
 #include "timer.h"
 #include "ikev2.h"
 #include "ip_address.h"
-#include "hostpair.h"
+#include "host_pair.h"
+#include "ikev2_create_child_sa.h"		/* for initiate_v2_CREATE_CHILD_SA_create_child() */
 
 /*
  * queue an IPsec SA negotiation pending completion of a
@@ -62,7 +63,7 @@ void add_pending(struct fd *whack_sock,
 		 lset_t policy,
 		 unsigned long try,
 		 so_serial_t replacing,
-		 const chunk_t sec_label,
+		 const shunk_t sec_label,
 		 bool part_of_initiate)
 {
 	/* look for duplicate pending IPsec SA's, skip add operation */
@@ -84,7 +85,7 @@ void add_pending(struct fd *whack_sock,
 	}
 
 	struct pending *p = alloc_thing(struct pending, "struct pending");
-	p->whack_sock = dup_any(whack_sock); /*on heap*/
+	p->whack_sock = fd_dup(whack_sock, HERE); /*on heap*/
 	p->ike = ike;
 	p->connection = c;
 	p->policy = policy;
@@ -263,15 +264,12 @@ void unpend(struct ike_sa *ike, struct connection *cc)
 	}
 
 	for (pp = host_pair_first_pending(ike->sa.st_connection);
-	     (p = *pp) != NULL; )
-	{
+	     (p = *pp) != NULL; ) {
 		if (p->ike == ike) {
 			p->pend_time = mononow();
 			switch (ike->sa.st_ike_version) {
 			case IKEv2:
-				if (cc != p->connection) {
-					ikev2_initiate_child_sa(p);
-				} else {
+				if (cc == p->connection) {
 					/*
 					 * IKEv2 AUTH negotiation
 					 * include child.  nothing to
@@ -279,13 +277,20 @@ void unpend(struct ike_sa *ike, struct connection *cc)
 					 * delete it
 					 */
 					what = "delete from";
+					break;
 				}
+				initiate_v2_CREATE_CHILD_SA_create_child(ike,
+									 p->connection,
+									 p->policy, p->try,
+									 p->sec_label,
+									 p->whack_sock);
 				break;
 			case IKEv1:
 #ifdef USE_IKEv1
 				quick_outI1(p->whack_sock, &ike->sa, p->connection,
 					    p->policy,
-					    p->try, p->replacing, empty_chunk);
+					    p->try, p->replacing,
+					    null_shunk);
 #endif
 				break;
 			default:
@@ -320,7 +325,7 @@ struct connection *first_pending(const struct ike_sa *ike,
 	{
 		if (p->ike == ike) {
 			close_any(p_whack_sock); /*on-heap*/
-			*p_whack_sock = dup_any(p->whack_sock); /*on-heap*/
+			*p_whack_sock = fd_dup(p->whack_sock, HERE); /*on-heap*/
 			*policy = p->policy;
 			return p->connection;
 		}
@@ -417,9 +422,9 @@ void flush_pending_by_connection(const struct connection *c)
 	}
 }
 
-void show_pending_phase2(struct show *s,
-			 const struct connection *c,
-			 const struct ike_sa *ike)
+void show_pending_child_details(struct show *s,
+				const struct connection *c,
+				const struct ike_sa *ike)
 {
 	struct pending **pp, *p;
 

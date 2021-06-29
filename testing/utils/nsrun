@@ -2615,7 +2615,7 @@ class NS_GuestNetwork():
             self.eth1.ipv4 = "192.1.2.23/24"
             self.eth1.gwv4 = "192.1.2.254"
             self.eth1.ipv6 = "2001:db8:1:2::23/64"
-            self.eth1.gwv6  = "2001:db8:1:2::254"
+            self.eth1.gwv6 = "2001:db8:1:2::254"
             self.eth1.routes = ['route add 192.0.1.0/24 via 192.1.2.45',
                                 'route add 2001:db8:0:1::/64 via 2001:db8:1:2::45']
             self.eth1.br = "brswan12-" + self.tcsum
@@ -2642,7 +2642,7 @@ class NS_GuestNetwork():
             self.eth0.ipv4 = "192.1.3.209/24"
             self.eth0.gwv4 = "192.1.3.254"
             self.eth0.ipv6 = "2001:db8:1:3::209/64"
-            self.eth0.gwv6  = "2001:db8:1:3::254"
+            self.eth0.gwv6 = "2001:db8:1:3::254"
             self.eth0.br = "brswan13-" + self.tcsum
             self.eth0.macaddress = "12:00:00:ab:cd:02"
 
@@ -2655,7 +2655,7 @@ class NS_GuestNetwork():
             self.eth1.ipv4 = "192.1.3.33/24"
             self.eth1.gwv4 = "192.1.3.254"
             self.eth1.ipv6 = "2001:db8:1:3::33/64"
-            self.eth1.gwv6  = "2001:db8:1:3::254"
+            self.eth1.gwv6 = "2001:db8:1:3::254"
             self.eth1.br = "brswan13-" + self.tcsum
             self.eth0.macaddress = "12:00:00:de:cd:49"
             self.eth1.macaddress = "12:00:00:96:96:49"
@@ -2769,7 +2769,7 @@ class NS_GuestNetwork():
 
         ipshow = "%s link show dev %s" % (DEF.ip_c, eth.name)
         delay = 2
-        cmd  = ipshow
+        cmd = ipshow
         while (delay < 17):
             cmd = "sleep 0.%s && %s" % (delay, ipshow)
             if not sudo_shell_run(cmd, self.shell):
@@ -3283,18 +3283,18 @@ def resanitize(args):
     #                       print "cat %s/%s"%(testdir,f)
 
 
-def check_host_netkey_stack():
-    # check if there is netkey stack on the host
+def check_host_xfrm_stack():
+    # check if there is XFRM stack on the host
 
     v_line = runcmd("ipsec version")
-    if v_line.split()[3] != '(netkey)':
-        logger.debug("no netkey stack found, try to load it %s", v_line)
-        runcmd("sudo ipsec _stackmanager start --netkey")
+    if v_line.split()[3] != '(XFRM)':
+        logger.debug("no XFRM stack found, try to load it %s", v_line)
+        runcmd("sudo ipsec _stackmanager start --xfrm")
         v_line = runcmd("ipsec version")
-        if v_line.split()[3] != '(netkey)':
+        if v_line.split()[3] != '(XFRM)' and v_line.split()[3] != '(netkey)':
             # give up
             logger.error(
-                "ABORT no netkey stack found. cannot run docker test, %s", v_line)
+                "ABORT no XFRM stack found. cannot run test, %s", v_line)
             return True
 
 
@@ -3304,7 +3304,7 @@ def run_docker_q(args, tests, st):
             "dtorun"], args.npool,
         args.testlist)
 
-    if check_host_netkey_stack():
+    if check_host_xfrm_stack():
         return True
 
     bootp = [1, 2, 3]
@@ -3748,7 +3748,7 @@ class Test():
         else:
             self.type = args.testtype
             if not tlr and self.type == "dockerplutotest" or self.type == "nsplutotest":
-                if check_host_netkey_stack():
+                if check_host_xfrm_stack():
                     return True
             if self.type == "nsplutotest":
                 # possible recursion ?? abort
@@ -4090,7 +4090,7 @@ class TestListRun():
         if self.nstorun or self.dnottorun:
             sudo = localhost_sudo(self.args, '')
             logger.info("run local host tweaks")
-            check_host_netkey_stack()
+            check_host_xfrm_stack()
 
             if self.nstorun:
                 ns_host_tweaks(self.args, sudo)

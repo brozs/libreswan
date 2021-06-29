@@ -60,7 +60,7 @@ const struct ip_protocol ip_protocols[] = {
 		.ipproto = IPPROTO_ICMP,
 		.reference = "[RFC792]",
 		/* libreswan */
-		.prefix = "tun",
+		.prefix = "icmp",
 	},
 	[2] = {
 		.description = "Internet Group Management",
@@ -383,7 +383,7 @@ const struct ip_protocol ip_protocols[] = {
 		.ikev1_protocol_id = PROTO_IPSEC_AH,
 	},
 	[52] = {
-		.description = "Integrated Net Layer Security  TUBA",
+		.description = "Integrated Net Layer Security TUBA",
 		.name = "I-NLSP",
 		.ipproto = 52,
 		.reference = "[K_Robert_Glenn]",
@@ -1103,6 +1103,24 @@ const struct ip_protocol *protocol_by_prefix(const char *prefix)
 	return NULL;
 }
 
+const struct ip_protocol *protocol_by_shunk(shunk_t token)
+{
+	/* try the name */
+	for (unsigned ipproto = 0; ipproto < elemsof(ip_protocols); ipproto++) {
+		const struct ip_protocol *p = &ip_protocols[ipproto];
+		passert(p->ipproto == ipproto);
+		if (hunk_strcaseeq(token, p->name) || hunk_strcaseeq(token, p->prefix)) {
+			return p;
+		}
+	}
+	/* try the number */
+	uintmax_t ipproto;
+	if (shunk_to_uintmax(token, NULL, 10, &ipproto, 255) == NULL) {
+		return protocol_by_ipproto(ipproto);
+	}
+	return NULL;
+}
+
 const struct ip_protocol *protocol_by_ipproto(unsigned ipproto)
 {
 	if (ipproto >= elemsof(ip_protocols)) {
@@ -1114,28 +1132,28 @@ const struct ip_protocol *protocol_by_ipproto(unsigned ipproto)
 
 err_t ttoipproto(const char *proto_name, unsigned *proto)
 {
-       /* extract protocol by trying to resolve it by name */
-       const struct protoent *protocol = getprotobyname(proto_name);
-       if (protocol != NULL) {
-               *proto = protocol->p_proto;
-               return NULL;
-       }
+	/* extract protocol by trying to resolve it by name */
+	const struct protoent *protocol = getprotobyname(proto_name);
+	if (protocol != NULL) {
+		*proto = protocol->p_proto;
+		return NULL;
+	}
 
-       /* failed, now try it by number */
-       char *end;
-       long l = strtol(proto_name, &end, 0);
-       if (*proto_name && *end) {
-               *proto = 0;
-               return "<protocol> is neither a number nor a valid name";
-       }
+	/* failed, now try it by number */
+	char *end;
+	long l = strtol(proto_name, &end, 0);
+	if (*proto_name && *end) {
+		*proto = 0;
+		return "<protocol> is neither a number nor a valid name";
+	}
 
-       if (l < 0 || l > 0xff) {
-               *proto = 0;
-               return "<protocol> must be between 0 and 255";
-       }
+	if (l < 0 || l > 0xff) {
+		*proto = 0;
+		return "<protocol> must be between 0 and 255";
+	}
 
-       *proto = (uint8_t)l;
-       return NULL;
+	*proto = (uint8_t)l;
+	return NULL;
 }
 
 /*

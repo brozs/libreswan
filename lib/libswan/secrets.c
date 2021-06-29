@@ -146,7 +146,7 @@ static void process_secrets_file(struct file_lex_position *flp,
 				 struct secret **psecrets, const char *file_pat);
 
 struct secret {
-	struct secret  *next;
+	struct secret *next;
 	struct id_list *ids;
 	struct private_key_stuff pks;
 };
@@ -302,8 +302,8 @@ static struct hash_signature RSA_sign_hash(const struct private_key_stuff *pks,
 		SECStatus s = PK11_Sign(pks->private_key, &signature, &data);
 		if (s != SECSuccess) {
 			/* PR_GetError() returns the thread-local error */
-			log_nss_error(RC_LOG_SERIOUS, logger,
-				      "RSA sign function failed");
+			llog_nss_error(RC_LOG_SERIOUS, logger,
+				       "RSA sign function failed");
 			return (struct hash_signature) { .len = 0, };
 		}
 	} else { /* Digital signature scheme with rsa-pss*/
@@ -324,8 +324,8 @@ static struct hash_signature RSA_sign_hash(const struct private_key_stuff *pks,
 						     &mech_item, &signature, &data);
 		if (s != SECSuccess) {
 			/* PR_GetError() returns the thread-local error */
-			log_nss_error(RC_LOG_SERIOUS, logger,
-				      "RSA DSS sign function failed");
+			llog_nss_error(RC_LOG_SERIOUS, logger,
+				       "RSA DSS sign function failed");
 			return (struct hash_signature) { .len = 0, };
 		}
 	}
@@ -467,8 +467,8 @@ static struct hash_signature ECDSA_sign_hash(const struct private_key_stuff *pks
 	}
 	if (s != SECSuccess) {
 		/* PR_GetError() returns the thread-local error */
-		log_nss_error(RC_LOG_SERIOUS, logger,
-			      "ECDSA sign function failed");
+		llog_nss_error(RC_LOG_SERIOUS, logger,
+			       "ECDSA sign function failed");
 		return (struct hash_signature) { .len = 0, };
 	}
 
@@ -476,8 +476,8 @@ static struct hash_signature ECDSA_sign_hash(const struct private_key_stuff *pks
 	if (DSAU_EncodeDerSigWithLen(&encoded_signature, &raw_signature,
 				     raw_signature.len) != SECSuccess) {
 		/* PR_GetError() returns the thread-local error */
-		log_nss_error(RC_LOG, logger,
-			      "NSS: constructing DER encoded ECDSA signature using DSAU_EncodeDerSigWithLen() failed:");
+		llog_nss_error(RC_LOG, logger,
+			       "NSS: constructing DER encoded ECDSA signature using DSAU_EncodeDerSigWithLen() failed:");
 		return (struct hash_signature) { .len = 0, };
 	}
 	struct hash_signature signature = {
@@ -850,7 +850,7 @@ static err_t process_psk_secret(struct file_lex_position *flp, chunk_t *psk)
 	err_t ugh = NULL;
 
 	if (flp->tok[0] == '"' || flp->tok[0] == '\'') {
-		size_t len = flp->cur - flp->tok  - 2;
+		size_t len = flp->cur - flp->tok - 2;
 
 		if (len < 8) {
 			llog(RC_LOG_SERIOUS, flp->logger,
@@ -927,7 +927,7 @@ static err_t process_xauth_secret(struct file_lex_position *flp, chunk_t *xauth)
 	return ugh;
 }
 
-/* parse static PPK  */
+/* parse static PPK */
 static err_t process_ppk_static_secret(struct file_lex_position *flp,
 				       chunk_t *ppk, chunk_t *ppk_id)
 {
@@ -1195,13 +1195,13 @@ static void add_secret(struct secret **slist,
 		idl->next = NULL;
 		idl->id = empty_id;
 		idl->id.kind = ID_NONE;
-		idl->id.ip_addr = address_any(&ipv4_info);
+		idl->id.ip_addr = ipv4_info.address.any;
 
 		struct id_list *idl2 = alloc_bytes(sizeof(struct id_list), "id list");
 		idl2->next = idl;
 		idl2->id = empty_id;
 		idl2->id.kind = ID_NONE;
-		idl2->id.ip_addr = address_any(&ipv4_info);
+		idl2->id.ip_addr = ipv4_info.address.any;
 
 		s->ids = idl2;
 	}
@@ -1377,12 +1377,12 @@ static void process_secret_records(struct file_lex_position *flp,
 				if (tokeq("%any")) {
 					id = empty_id;
 					id.kind = ID_IPV4_ADDR;
-					id.ip_addr = address_any(&ipv4_info);
+					id.ip_addr = ipv4_info.address.any;
 					ugh = NULL;
 				} else if (tokeq("%any6")) {
 					id = empty_id;
 					id.kind = ID_IPV6_ADDR;
-					id.ip_addr = address_any(&ipv6_info);
+					id.ip_addr = ipv6_info.address.any;
 					ugh = NULL;
 				} else {
 					ugh = atoid(flp->tok, &id);
@@ -1532,25 +1532,25 @@ void lsw_load_preshared_secrets(struct secret **psecrets, const char *secrets_fi
 
 struct pubkey *pubkey_addref(struct pubkey *pk, where_t where)
 {
-	return refcnt_addref(pk, where);
+	return addref(pk, where);
 }
 
 /*
  * free a public key struct
  */
-static void free_public_key(struct pubkey **pk, where_t where UNUSED)
+static void free_public_key(void *obj, where_t where UNUSED)
 {
-	free_id_content(&(*pk)->id);
-	free_chunk_content(&(*pk)->issuer);
+	struct pubkey *pk = obj;
+	free_id_content(&pk->id);
+	free_chunk_content(&pk->issuer);
 	/* algorithm-specific freeing */
-	(*pk)->type->free_pubkey_content(&(*pk)->u);
-	pfree(*pk);
-	*pk = NULL;
+	pk->type->free_pubkey_content(&pk->u);
+	pfree(pk);
 }
 
 void pubkey_delref(struct pubkey **pkp, where_t where)
 {
-	refcnt_delref(pkp, free_public_key, where);
+	delref(pkp, where);
 }
 
 /*
@@ -1650,7 +1650,7 @@ static struct pubkey *alloc_public_key(const struct id *id, /* ASKK */
 				       const keyid_t *keyid, const ckaid_t *ckaid, size_t size,
 				       where_t where)
 {
-	struct pubkey *pk = refcnt_alloc(struct pubkey, where);
+	struct pubkey *pk = refcnt_alloc(struct pubkey, free_public_key, where);
 	pk->u = *pkc;
 	pk->id = clone_id(id, "public key id");
 	pk->dns_auth_level = dns_auth_level;
@@ -1820,17 +1820,17 @@ err_t find_or_load_private_key_by_cert(struct secret **secrets, const struct cer
 {
 	*load_needed = false;
 
-	if (cert == NULL || cert->u.nss_cert == NULL) {
+	if (cert == NULL || cert->nss_cert == NULL) {
 		return "NSS cert not found";
 	}
 
-	SECKEYPublicKey *pubk = SECKEY_ExtractPublicKey(&cert->u.nss_cert->subjectPublicKeyInfo);
+	SECKEYPublicKey *pubk = SECKEY_ExtractPublicKey(&cert->nss_cert->subjectPublicKeyInfo);
 	if (pubk == NULL) {
 		/* dbg(... nss error) */
 		return "NSS: could not determine certificate kind; SECKEY_ExtractPublicKey() failed";
 	}
 
-	err_t err = find_or_load_private_key_by_cert_1(secrets, cert->u.nss_cert, pks, load_needed, logger,
+	err_t err = find_or_load_private_key_by_cert_1(secrets, cert->nss_cert, pks, load_needed, logger,
 						       /* extracted fields */
 						       pubk);
 	SECKEY_DestroyPublicKey(pubk);

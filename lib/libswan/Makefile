@@ -45,15 +45,16 @@ OBJS += constants.o \
 	lex.o \
 	lswconf.o \
 	lswfips.o \
-	rangetosubnet.o sameaddr.o \
+	sameaddr.o \
 	secrets.o \
-	subnettypeof.o ttoaddr.o ttodata.o \
+	subnettypeof.o ttodata.o \
 	ttosa.o ttosubnet.o ttoul.o \
 	secitem_chunk.o \
 	base64_pubkey.o \
 	lswnss.o \
 	alg_byname.o
 
+OBJS += ttoaddress.o
 OBJS += alloc.o
 OBJS += alloc_printf.o
 
@@ -97,6 +98,7 @@ OBJS += chunk.o
 OBJS += shunk.o
 OBJS += hunk.o
 
+OBJS += ip_bytes.o
 OBJS += ip_address.o
 OBJS += ip_cidr.o
 OBJS += ip_encap.o
@@ -132,10 +134,11 @@ OBJS += libreswan_bad_case.o
 
 OBJS += lswglob.o
 
+OBJS += failsafe_logger.o
 OBJS += jambuf.o
 OBJS += jam_bytes.o
 OBJS += log_message.o
-OBJS += log_va_list.o
+OBJS += llog_va_list.o
 OBJS += log_nss_error.o
 OBJS += jam_nss_error.o
 OBJS += jam_nss_ckm.o

@@ -2,13 +2,13 @@
 west #
  # confirm that the network is alive
 west #
- ../../pluto/bin/wait-until-alive -I 192.0.1.254 192.0.2.254
+ ../../guestbin/wait-until-alive -I 192.0.1.254 192.0.2.254
 destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  ipsec start
 Redirecting to: [initsystem]
 west #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 west #
  ipsec auto --add replay
 002 "replay": added IKEv2 connection
@@ -26,19 +26,18 @@ west #
 1v2 "replay" #1: initiating IKEv2 connection
 1v2 "replay" #1: sent IKE_SA_INIT request
 1v2 "replay" #1: sent IKE_AUTH request {auth=IKEv2 cipher=AES_GCM_16_256 integ=n/a prf=HMAC_SHA2_512 group=MODP2048}
-002 "replay" #2: IKE_AUTH response contained the error notification NO_PROPOSAL_CHOSEN
-000 "replay" #2: scheduling retry attempt 1 of an unlimited number, but releasing whack
+003 "replay" #1: authenticated using RSA with SHA2_512 and preloaded certificate '@east'
+003 "replay" #2: IKE_AUTH response contained the error notification NO_PROPOSAL_CHOSEN
+002 "replay" #1: deleting other state #2 (STATE_V2_IKE_AUTH_CHILD_I0) and NOT sending notification
+002 "replay" #1: deleting state (STATE_V2_ESTABLISHED_IKE_SA) and sending notification
+002 "replay" #1: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
 west #
  echo done
 done
 west #
- ../../pluto/bin/ipsec-look.sh
+ ../../guestbin/ipsec-look.sh
 west NOW
 XFRM state:
-src 192.1.2.23 dst 192.1.2.45
-	proto esp spi 0xSPISPI reqid REQID mode tunnel
-	replay-window 0 
-	sel src 192.1.2.23/32 dst 192.1.2.45/32 
 XFRM policy:
 XFRM done
 IPSEC mangle TABLES
@@ -51,9 +50,5 @@ default via 192.1.2.254 dev eth1
 NSS_CERTIFICATES
 Certificate Nickname                                         Trust Attributes
                                                              SSL,S/MIME,JAR/XPI
-west #
- ../bin/check-for-core.sh
-west #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 west #
  

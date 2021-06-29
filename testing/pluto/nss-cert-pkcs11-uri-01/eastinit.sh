@@ -29,7 +29,7 @@ echo "KEY_URI=${KEY_URI}"
 echo -e "conn eastcert\n\trightcert=${CERT_URI}" > OUTPUT/eastcert.conf
 echo -e "NSS Certificate DB:${GNUTLS_PIN}\nNSS FIPS 140-2 Certificate DB:${GNUTLS_PIN}\nlibreswan:${GNUTLS_PIN}" > /etc/ipsec.d/nsspassword 
 ipsec start
-/testing/pluto/bin/wait-until-pluto-started
+../../guestbin/wait-until-pluto-started
 ipsec auto --add westnet-eastnet-ikev2
 ipsec auto --listall
 echo "initdone"

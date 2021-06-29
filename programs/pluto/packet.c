@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <sys/socket.h>		/* for AF_INET/AF_INET6 */
 
 #include "constants.h"
 #include "lswalloc.h"
@@ -419,7 +420,7 @@ static field_desc isaid_fields[] = {
 	{ ft_pnpc, 8 / BITS_PER_BYTE, "next payload type", &payload_names_ikev1orv2 },
 	{ ft_zig, 8 / BITS_PER_BYTE, "reserved", NULL },
 	{ ft_len, 16 / BITS_PER_BYTE, "length", NULL },
-	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ike_idtype_names }, /* ??? depends on DOI? */
+	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ikev1_ike_id_type_names }, /* ??? depends on DOI? */
 	{ ft_nat, 8 / BITS_PER_BYTE, "DOI specific A", NULL },          /* ??? depends on DOI? */
 	{ ft_nat, 16 / BITS_PER_BYTE, "DOI specific B", NULL },         /* ??? depends on DOI? */
 	{ ft_end, 0, NULL, NULL }
@@ -451,7 +452,7 @@ static field_desc isaiid_fields[] = {
 	{ ft_pnpc, 8 / BITS_PER_BYTE, "next payload type", &payload_names_ikev1orv2 },
 	{ ft_zig, 8 / BITS_PER_BYTE, "reserved", NULL },
 	{ ft_len, 16 / BITS_PER_BYTE, "length", NULL },
-	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ike_idtype_names },
+	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ikev1_ike_id_type_names },
 	{ ft_loose_enum, 8 / BITS_PER_BYTE, "Protocol ID", &ip_protocol_id_names, },
 	{ ft_nat, 16 / BITS_PER_BYTE, "port", NULL },
 	{ ft_end, 0, NULL, NULL }
@@ -784,7 +785,7 @@ static field_desc isanat_oa_fields[] = {
 	{ ft_pnpc, 8 / BITS_PER_BYTE, "next payload type", &ikev1_payload_names },
 	{ ft_zig, 8 / BITS_PER_BYTE, "reserved", NULL },
 	{ ft_len, 16 / BITS_PER_BYTE, "length", NULL },
-	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ike_idtype_names },
+	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ikev1_ike_id_type_names },
 	{ ft_zig, 24 / BITS_PER_BYTE, "reserved", NULL },
 	{ ft_end, 0, NULL, NULL }
 };
@@ -1068,7 +1069,7 @@ static field_desc ikev2id_fields[] = {
 	{ ft_pnpc, 8 / BITS_PER_BYTE, "next payload type", &ikev2_payload_names },
 	{ ft_lset, 8 / BITS_PER_BYTE, "flags", &payload_flag_names },
 	{ ft_len, 16 / BITS_PER_BYTE, "length", NULL },
-	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ikev2_idtype_names },
+	{ ft_enum, 8 / BITS_PER_BYTE, "ID type", &ikev2_ike_id_type_names },
 	{ ft_raw, 24 / BITS_PER_BYTE, "reserved", NULL },
 	{ ft_end,  0, NULL, NULL },
 };
@@ -1630,7 +1631,7 @@ struct_desc ikev2notify_ipcomp_data_desc = {
  *
  * See struct sec_ctx in state.h
  */
-#include "labeled_ipsec.h"	/* for struct sec_ctx */
+#include "ikev1_labeled_ipsec.h"	/* for struct sec_ctx */
 
 static field_desc sec_ctx_fields[] = {
 	{ ft_nat,  8 / BITS_PER_BYTE, "DOI", NULL },
@@ -1671,7 +1672,7 @@ struct_desc *v1_payload_desc(unsigned p)
 		&isakmp_notification_desc,      /* 11 ISAKMP_NEXT_N (Notification) */
 		&isakmp_delete_desc,            /* 12 ISAKMP_NEXT_D (Delete) */
 		&isakmp_vendor_id_desc,         /* 13 ISAKMP_NEXT_VID (Vendor ID) */
-		&isakmp_attr_desc,              /* 14 ISAKMP_NEXT_MCFG_ATTR (ModeCfg)  */
+		&isakmp_attr_desc,              /* 14 ISAKMP_NEXT_MCFG_ATTR (ModeCfg) */
 		NULL,                           /* 15 */
 		NULL,                           /* 16 */
 		NULL,                           /* 17 */
@@ -1746,30 +1747,31 @@ struct pbs_out open_pbs_out(const char *name, uint8_t *buffer, size_t sizeof_buf
 	return outs;
 }
 
-pb_stream same_chunk_as_in_pbs(chunk_t chunk, const char *name)
+pb_stream same_chunk_as_pbs_in(chunk_t chunk, const char *name)
 {
 	pb_stream pbs;
 	init_pbs(&pbs, chunk.ptr, chunk.len, name);
 	return pbs;
 }
 
-chunk_t same_out_pbs_as_chunk(pb_stream *pbs)
+shunk_t same_pbs_out_as_shunk(pb_stream *pbs)
 {
-	chunk_t chunk = {
-		.ptr = pbs->start,
-		.len = pbs_offset(pbs),
-	};
-	return chunk;
+	return shunk2(pbs->start, pbs_offset(pbs));
 }
 
-chunk_t clone_out_pbs_as_chunk(pb_stream *pbs, const char *name)
+chunk_t clone_pbs_out_as_chunk(pb_stream *pbs, const char *name)
 {
-	return clone_hunk(same_out_pbs_as_chunk(pbs), name);
+	return clone_hunk(same_pbs_out_as_shunk(pbs), name);
 }
 
-shunk_t pbs_in_as_shunk(const struct pbs_in *pbs)
+shunk_t same_pbs_in_as_shunk(const struct pbs_in *pbs)
 {
 	return shunk2(pbs->start, pbs_room(pbs));
+}
+
+chunk_t clone_pbs_in_as_chunk(const struct pbs_in *pbs, const char *name)
+{
+	return clone_hunk(shunk2(pbs->start, pbs_room(pbs)), name);
 }
 
 shunk_t pbs_in_left_as_shunk(const pb_stream *pbs)
@@ -2009,6 +2011,7 @@ diag_t pbs_in_struct(struct pbs_in *ins, struct_desc *sd,
 
 	passert(dest_size >= sd->size);
 	uint8_t *roof = cur + sd->size; /* may be changed by a length field */
+	bool length_field_found = false;
 	uint8_t *dest = dest_start;
 	uint8_t *dest_end = dest + dest_size;
 	bool immediate = false;
@@ -2076,6 +2079,8 @@ diag_t pbs_in_struct(struct pbs_in *ins, struct_desc *sd,
 			case ft_len:    /* length of this struct and any following crud */
 			case ft_lv:     /* length/value field of attribute */
 			{
+				passert(!length_field_found && obj_pbs != NULL);
+				length_field_found = true;
 				size_t len = fp->field_type ==
 					ft_len ? n :
 					immediate ? sd->size :
@@ -2178,6 +2183,7 @@ diag_t pbs_in_struct(struct pbs_in *ins, struct_desc *sd,
 
 	passert(cur == ins->cur + sd->size);
 	if (obj_pbs != NULL) {
+		passert(length_field_found);
 		init_pbs(obj_pbs, ins->cur,
 			 roof - ins->cur, sd->name);
 		obj_pbs->container = ins;
@@ -2648,7 +2654,7 @@ bool out_struct(const void *struct_ptr, struct_desc *sd,
 {
 	diag_t d = pbs_out_struct(outs, sd, struct_ptr, 0, obj_pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 
@@ -2677,7 +2683,7 @@ bool ikev1_out_generic_raw(struct_desc *sd,
 	}
 	diag_t d = pbs_out_raw(&pbs, bytes, len, name);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 
@@ -2688,6 +2694,19 @@ bool ikev1_out_generic_raw(struct_desc *sd,
 static diag_t space_for(size_t len, pb_stream *outs, const char *fmt, ...) PRINTF_LIKE(3) MUST_USE_RESULT;
 static diag_t space_for(size_t len, pb_stream *outs, const char *fmt, ...)
 {
+	/* nothing to do, or at least one byte spare */
+	if (len == 0 || pbs_left(outs) > len) {
+		LSWDBGP(DBG_BASE, buf) {
+			jam_string(buf, "emitting ");
+			va_list ap;
+			va_start(ap, fmt);
+			jam_va_list(buf, fmt, ap);
+			va_end(ap);
+			jam(buf, " into %s", outs->name);
+		}
+		return NULL;
+	}
+
 	if (pbs_left(outs) == 0) {
 		/* should this be a DBGLOG? */
 		diag_t d;
@@ -2700,31 +2719,22 @@ static diag_t space_for(size_t len, pb_stream *outs, const char *fmt, ...)
 			d = diag(PRI_SHUNK, pri_shunk(jambuf_as_shunk(buf)));
 		}
 		return d;
-	} else if (pbs_left(outs) <= len) {
-		/* overflow at at left==1; left==0 for already overflowed */
-		diag_t d;
-		JAMBUF(buf) {
-			jam(buf, "%s is full; unable to emit ", outs->name);
-			va_list ap;
-			va_start(ap, fmt);
-			jam_va_list(buf, fmt, ap);
-			va_end(ap);
-			d = diag(PRI_SHUNK, pri_shunk(jambuf_as_shunk(buf)));
-		}
-		/* overflow the buffer */
-		outs->cur += pbs_left(outs);
-		return d;
-	} else {
-		LSWDBGP(DBG_BASE, buf) {
-			jam_string(buf, "emitting ");
-			va_list ap;
-			va_start(ap, fmt);
-			jam_va_list(buf, fmt, ap);
-			va_end(ap);
-			jam(buf, " into %s", outs->name);
-		}
-		return NULL;
 	}
+
+	/* never exactly fill - reserve space for a trailing byte */
+	pexpect(pbs_left(outs) <= len);
+	diag_t d;
+	JAMBUF(buf) {
+		jam(buf, "%s is full; unable to emit ", outs->name);
+		va_list ap;
+		va_start(ap, fmt);
+		jam_va_list(buf, fmt, ap);
+		va_end(ap);
+			d = diag(PRI_SHUNK, pri_shunk(jambuf_as_shunk(buf)));
+	}
+	/* overflow the buffer */
+	outs->cur += pbs_left(outs);
+	return d;
 }
 
 diag_t pbs_out_raw(struct pbs_out *outs, const void *bytes, size_t len, const char *name)
@@ -2868,8 +2878,8 @@ diag_t pbs_in_address(struct pbs_in *input_pbs,
 	}
 }
 
-diag_t pbs_out_address(struct pbs_out *out_pbs, const ip_address *address, const char *what)
+diag_t pbs_out_address(struct pbs_out *out_pbs, const ip_address address, const char *what)
 {
-	shunk_t as = address_as_shunk(address);
-	return pbs_out_raw(out_pbs, as.ptr, as.len, what);
+	shunk_t as = address_as_shunk(&address);
+	return pbs_out_hunk(out_pbs, as, what);
 }

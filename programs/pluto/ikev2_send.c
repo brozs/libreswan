@@ -38,6 +38,7 @@
 #include "pluto_stats.h"
 #include "demux.h"	/* for struct msg_digest */
 #include "rnd.h"
+#include "kernel.h"	/* for get_my_cpi() */
 
 bool send_recorded_v2_message(struct ike_sa *ike,
 			      const char *where,
@@ -71,7 +72,7 @@ void record_v2_outgoing_fragment(struct pbs_out *pbs,
 				 struct v2_outgoing_fragment **frags)
 {
 	pexpect(*frags == NULL);
-	chunk_t frag = same_out_pbs_as_chunk(pbs);
+	shunk_t frag = same_pbs_out_as_shunk(pbs);
 	*frags = alloc_bytes(sizeof(struct v2_outgoing_fragment) + frag.len, what);
 	(*frags)->len = frag.len;
 	memcpy((*frags)->ptr/*array*/, frag.ptr, frag.len);
@@ -107,7 +108,7 @@ bool emit_v2UNKNOWN(const char *victim, enum isakmp_xchg_types exchange_type,
 	struct pbs_out pbs;
 	d = pbs_out_struct(outs, &ikev2_unknown_payload_desc, &gen, sizeof(gen), &pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 	close_output_pbs(&pbs);
@@ -129,12 +130,12 @@ bool emit_v2V(const char *string, pb_stream *outs)
 	struct pbs_out pbs;
 	d = pbs_out_struct(outs, &ikev2_vendor_id_desc, &gen, sizeof(gen), &pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 	d = pbs_out_raw(&pbs, string, strlen(string), string);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 	close_output_pbs(&pbs);
@@ -207,7 +208,7 @@ bool emit_v2Nsa_pl(v2_notification_t ntype,
 	if (spi != NULL) {
 		diag_t d = pbs_out_raw(&pls, spi, sizeof(*spi), "SPI");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 			return false;
 		}
 	}
@@ -237,13 +238,10 @@ bool emit_v2N_bytes(v2_notification_t ntype,
 		return false;
 	}
 
-	/* for some reason pbs_out_raw() doesn't like size==0 */
-	if (size > 0) {
-		diag_t d = pbs_out_raw(&pl, bytes, size, "Notify data");
-		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
-			return false;
-		}
+	diag_t d = pbs_out_raw(&pl, bytes, size, "Notify data");
+	if (d != NULL) {
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		return false;
 	}
 
 	close_output_pbs(&pl);
@@ -274,7 +272,7 @@ bool emit_v2N_signature_hash_algorithms(lset_t sighash_policy,
 		diag_t d = pbs_out_raw(&n_pbs, &hash_id, sizeof(hash_id), \
 				       "hash algorithm identifier "#ID);\
 		if (d != NULL) {					\
-			log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", ""); \
+			llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", ""); \
 			return false;					\
 		}							\
 	}
@@ -313,7 +311,7 @@ struct response {
 	struct pbs_out body;
 	enum payload_security security;
 	struct logger *logger;
-	v2SK_payload_t sk;
+	struct v2SK_payload sk;
 	struct pbs_out *pbs; /* where to put message (POINTER!) */
 };
 
@@ -457,7 +455,7 @@ static bool emit_v2N_spi_response(struct response *response,
 
 	pb_stream n_pbs;
 	if (!emit_v2Nsa_pl(ntype, protoid, spi, response->pbs, &n_pbs) ||
-	    (ndata != NULL && !pbs_out_hunk(*ndata, &n_pbs, "Notify data"))) {
+	    (ndata != NULL && !out_hunk(*ndata, &n_pbs, "Notify data"))) {
 		return false;
 	}
 
@@ -510,7 +508,7 @@ void record_v2N_response(struct logger *logger,
  */
 void send_v2N_response_from_md(struct msg_digest *md,
 			       v2_notification_t ntype,
-			       const chunk_t *ndata)
+			       const shunk_t *ndata)
 {
 	passert(md != NULL); /* always a response */
 
@@ -561,7 +559,7 @@ void send_v2N_response_from_md(struct msg_digest *md,
 	}
 
 	/* build and add v2N payload to the packet */
-	chunk_t nhunk = ndata == NULL ? empty_chunk : *ndata;
+	shunk_t nhunk = ndata == NULL ? empty_shunk : *ndata;
 	if (!emit_v2N_hunk(ntype, nhunk, &rbody)) {
 		pexpect_fail(md->md_logger, HERE,
 			     "error building unencrypted %s %s notification with message ID %u",
@@ -613,7 +611,7 @@ stf_status record_v2_informational_request(const char *name,
 		return STF_INTERNAL_ERROR;
 	}
 
-	v2SK_payload_t sk = open_v2SK_payload(sender->st_logger, &message, ike);
+	struct v2SK_payload sk = open_v2SK_payload(sender->st_logger, &message, ike);
 	if (!pbs_ok(&sk.pbs) ||
 	    (emit_payloads != NULL && !emit_payloads(sender, &sk.pbs)) ||
 	    !close_v2SK_payload(&sk)) {
@@ -627,7 +625,6 @@ stf_status record_v2_informational_request(const char *name,
 		return ret;
 	}
 
-	ike->sa.st_pend_liveness = TRUE; /* we should only do this when dpd/liveness is active? */
 	record_v2_message(ike, &packet, name, MESSAGE_REQUEST);
 	return STF_OK;
 }
@@ -664,4 +661,42 @@ void free_v2_message_queues(struct state *st)
 		free_v2_outgoing_fragments(&st->st_v2_outgoing[message]);
 		free_v2_incoming_fragments(&st->st_v2_incoming[message]);
 	}
+}
+
+/* used by parent and child to emit v2N_IPCOMP_SUPPORTED if appropriate */
+bool emit_v2N_ipcomp_supported(struct child_sa *child, struct pbs_out *s)
+{
+	const struct connection *c = child->sa.st_connection;
+
+	dbg("Initiator child policy is compress=yes, sending v2N_IPCOMP_SUPPORTED for DEFLATE");
+
+	/* calculate and keep our CPI */
+	uint16_t c_spi;
+	if (child->sa.st_ipcomp.our_spi == 0) {
+		/* CPI is stored in network low order end of an ipsec_spi_t */
+		child->sa.st_ipcomp.our_spi = get_my_cpi(&c->spd,
+							 LIN(POLICY_TUNNEL, c->policy),
+							 child->sa.st_logger);
+		c_spi = (uint16_t)ntohl(child->sa.st_ipcomp.our_spi);
+		if (c_spi < IPCOMP_FIRST_NEGOTIATED) {
+			/* get_my_cpi() failed */
+			log_state(RC_LOG_SERIOUS, &child->sa,
+				  "kernel failed to calculate compression CPI (CPI=%d)", c_spi);
+			return false;
+		}
+		dbg("calculated compression CPI=%d", c_spi);
+	} else {
+		c_spi = (uint16_t)ntohl(child->sa.st_ipcomp.our_spi);
+	}
+
+	struct ikev2_notify_ipcomp_data d = {
+		.ikev2_cpi = c_spi,
+		.ikev2_notify_ipcomp_trans = IPCOMP_DEFLATE,
+	};
+	struct pbs_out d_pbs;
+
+	bool r = (emit_v2Npl(v2N_IPCOMP_SUPPORTED, s, &d_pbs) &&
+		  out_struct(&d, &ikev2notify_ipcomp_data_desc, &d_pbs, NULL));
+	close_output_pbs(&d_pbs);
+	return r;
 }

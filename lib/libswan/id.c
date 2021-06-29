@@ -79,14 +79,14 @@ err_t atoid(const char *src, struct id *id)
 		 * to ASN.1 DN
 		 * discard optional @ character in front of DN
 		 */
-		chunk_t name; /* shunk_t */
+		chunk_t name = empty_chunk;
 		err_t ugh = atodn((*src == '@') ? src + 1 : src, &name);
 		if (ugh != NULL) {
 			return ugh;
 		}
 		*id = (struct id) {
 			.kind = ID_DER_ASN1_DN,
-			.name = clone_hunk(name, "asn1"),
+			.name = name,
 		};
 		return NULL;
 	}
@@ -111,7 +111,7 @@ err_t atoid(const char *src, struct id *id)
 			&ipv4_info :
 			&ipv6_info;
 		ip_address addr;
-		err_t ugh = domain_to_address(shunk1(src), afi, &addr);
+		err_t ugh = ttoaddress_dns(shunk1(src), afi, &addr);
 		if (ugh != NULL) {
 			return ugh;
 		}
@@ -202,7 +202,7 @@ err_t atoid(const char *src, struct id *id)
 	return NULL;
 }
 
-void jam_id(struct jambuf *buf, const struct id *id, jam_bytes_fn *jam_bytes)
+void jam_id_bytes(struct jambuf *buf, const struct id *id, jam_bytes_fn *jam_bytes)
 {
 	switch (id->kind) {
 	case ID_FROMCERT:
@@ -217,7 +217,7 @@ void jam_id(struct jambuf *buf, const struct id *id, jam_bytes_fn *jam_bytes)
 	case ID_IPV4_ADDR:
 	case ID_IPV6_ADDR:
 		if (address_is_unset(&id->ip_addr) /*short-circuit*/||
-		    address_is_any(&id->ip_addr)) {
+		    address_is_any(id->ip_addr)) {
 			jam(buf, "%%any");
 		} else {
 			jam_address(buf, &id->ip_addr);
@@ -243,11 +243,11 @@ void jam_id(struct jambuf *buf, const struct id *id, jam_bytes_fn *jam_bytes)
 	}
 }
 
-const char *str_id(const struct id *id, id_buf *dst)
+const char *str_id_bytes(const struct id *id, jam_bytes_fn *jam_bytes, id_buf *dst)
 {
 	struct jambuf buf = ARRAY_AS_JAMBUF(dst->buf);
 	/* JAM_ID() only emits printable ASCII */
-	jam_id(&buf, id, jam_raw_bytes);
+	jam_id_bytes(&buf, id, jam_bytes);
 	return dst->buf;
 }
 
@@ -282,7 +282,12 @@ void free_id_content(struct id *id)
 	}
 }
 
-/* is this a "match anything" id */
+/*
+ * Is this a "match anything" id
+ * MUST only be called on our configured ID's, not our received ID's,
+ * because we would bad_case() on a bogus value
+ * (our enum and the IKE IANA values are matching)
+ */
 bool any_id(const struct id *a)
 {
 	switch (a->kind) {
@@ -291,11 +296,12 @@ bool any_id(const struct id *a)
 
 	case ID_IPV4_ADDR:
 	case ID_IPV6_ADDR:
-		return (address_is_unset(&a->ip_addr) || address_is_any(&a->ip_addr));
+		return (address_is_unset(&a->ip_addr) || address_is_any(a->ip_addr));
 
 	case ID_FQDN:
 	case ID_USER_FQDN:
 	case ID_DER_ASN1_DN:
+	case ID_DER_ASN1_GN:
 	case ID_KEY_ID:
 	case ID_NULL:
 		return FALSE;
@@ -379,6 +385,7 @@ bool match_id(const struct id *a, const struct id *b, int *wildcards)
 		*wildcards = MAX_WILDCARDS;
 		match = TRUE;
 	} else if (a->kind != b->kind) {
+		/* should this allow SAN match of cert with right ID_DER_ASN1_DN? */
 		match = FALSE;
 	} else if (a->kind == ID_DER_ASN1_DN) {
 		match = match_dn_any_order_wild(a->name, b->name, wildcards);

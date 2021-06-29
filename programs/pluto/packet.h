@@ -133,7 +133,7 @@ struct packet_byte_stream {
 	 *
 	 * IKEv2 has a "chain" of next payloads.  The chain starts
 	 * with the message's Next Payload field, and then threads its
-	 * way through every single payload header.  For SK, it's Next
+	 * way through every single payload header.  For SK, its Next
 	 * Payload field is for the first containing payload.
 	 *
 	 * IKEv1, provided payloads nested within an SK payload are
@@ -223,15 +223,12 @@ extern void init_pbs(pb_stream *pbs, uint8_t *start, size_t len,
 		     const char *name);
 
 /*
- * Map an input PBS onto CHUNK.
+ * Map a byte buffer to/from an input PBS and a CHUNK (it should take
+ * a hunk and treat it readonly).
  */
-extern pb_stream same_chunk_as_in_pbs(chunk_t chunk, const char *name);
-
-/*
- * Map/Clone the entire contents [start..pbs_room()) of an input PBS
- * as a chunk.
- */
-extern shunk_t pbs_in_as_shunk(const struct pbs_in *pbs);
+extern pb_stream same_chunk_as_pbs_in(chunk_t chunk, const char *name);
+extern shunk_t same_pbs_in_as_shunk(const struct pbs_in *pbs);
+extern chunk_t clone_pbs_in_as_chunk(const struct pbs_in *pbs, const char *name);
 
 /*
  * Map/Clone the remaining contents [cur..pbs_left()) of an input PBS
@@ -265,8 +262,8 @@ extern void close_output_pbs(struct pbs_out *pbs);
  * [start..cur) of an output PBS as a chunk.
  */
 
-extern chunk_t same_out_pbs_as_chunk(pb_stream *pbs);
-extern chunk_t clone_out_pbs_as_chunk(pb_stream *pbs, const char *name);
+extern shunk_t same_pbs_out_as_shunk(pb_stream *pbs);
+extern chunk_t clone_pbs_out_as_chunk(pb_stream *pbs, const char *name);
 
 diag_t pbs_out_struct(struct pbs_out *outs, struct_desc *sd,
 		      const void *struct_ptr, size_t struct_size,
@@ -292,15 +289,22 @@ diag_t pbs_out_repeated_byte(struct pbs_out *pbs, uint8_t, size_t len,
 diag_t pbs_out_raw(struct pbs_out *outs, const void *bytes, size_t len,
 		   const char *name) MUST_USE_RESULT;
 
-#define pbs_out_hunk(HUNK, OUTS, NAME)					\
+#define out_hunk(HUNK, OUTS, NAME)					\
 	({								\
 		typeof(HUNK) hunk_ = HUNK; /* evaluate once */		\
 		struct pbs_out *outs_ = OUTS;				\
 		diag_t d_ = pbs_out_raw(outs_, hunk_.ptr, hunk_.len, (NAME)); \
 		if (d_ != NULL) {					\
-			log_diag(RC_LOG_SERIOUS, outs_->outs_logger, &d_, "%s", ""); \
+			llog_diag(RC_LOG_SERIOUS, outs_->outs_logger, &d_, "%s", ""); \
 		}							\
 		d_ == NULL;						\
+	})
+
+#define pbs_out_hunk(OUTS, HUNK, NAME)					\
+	({								\
+		typeof(HUNK) hunk_ = HUNK; /* evaluate once */		\
+		struct pbs_out *outs_ = OUTS;				\
+		pbs_out_raw(outs_, hunk_.ptr, hunk_.len, (NAME));	\
 	})
 
 /* ISAKMP Header: for all messages
@@ -444,7 +448,7 @@ extern struct_desc ipsec_sit_desc;
  * A variable length SPI follows.
  *
  * XXX: Don't be confused by the field "Next Payload" in the below -
- * it has nothing to do with the next payload chain.  It's values are
+ * it has nothing to do with the next payload chain.  Its values are
  * either 0 (last) or ISAKMP_NEXT_P.
  *
  *                      1                   2                   3
@@ -474,7 +478,7 @@ extern struct_desc isakmp_proposal_desc;
  * Variable length SA Attributes follow.
  *
  * XXX: Don't be confused by the field "Next Payload" in the below -
- * it has nothing to do with the next payload chain.  It's values are
+ * it has nothing to do with the next payload chain.  Its values are
  * either 0 (last) or ISAKMP_NEXT_T.
  *
  *                      1                   2                   3
@@ -901,7 +905,7 @@ extern struct_desc isakmp_ikefrag_desc;
  */
 extern struct_desc *v1_payload_desc(unsigned p);
 
-/* descriptor for V2 payload type.  */
+/* descriptor for V2 payload type. */
 extern struct_desc *v2_payload_desc(unsigned p);
 
 
@@ -1222,8 +1226,8 @@ extern uint8_t reply_buffer[MAX_OUTPUT_UDP_SIZE];
 diag_t pbs_in_address(struct pbs_in *input_pbs,
 		      ip_address *address, const struct ip_info *af,
 		      const char *WHAT) MUST_USE_RESULT;
-diag_t pbs_out_address(struct pbs_out *output_pbs,
-		       const ip_address *address, const char *what) MUST_USE_RESULT;
+diag_t pbs_out_address(struct pbs_out *output_pbs, const ip_address address,
+		       const char *what) MUST_USE_RESULT;
 
 int pbs_peek_byte(const struct pbs_in *ins);
 

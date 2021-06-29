@@ -34,7 +34,7 @@
 
 #include "iface.h"
 #include "log.h"
-#include "hostpair.h"			/* for release_dead_interfaces() */
+#include "host_pair.h"			/* for release_dead_interfaces() */
 #include "state.h"			/* for delete_states_dead_interfaces() */
 #include "server.h"			/* for *_pluto_event() */
 #include "kernel.h"
@@ -43,7 +43,7 @@
 #include "ip_sockaddr.h"
 #include "ip_encap.h"
 
-struct iface_endpoint  *interfaces = NULL;  /* public interfaces */
+struct iface_endpoint *interfaces = NULL;  /* public interfaces */
 
 /*
  * The interfaces - eth0 ...
@@ -62,10 +62,18 @@ static const struct list_info iface_dev_info = {
 
 static struct list_head interface_dev = INIT_LIST_HEAD(&interface_dev, &iface_dev_info);
 
+static void free_iface_dev(void *obj, where_t where UNUSED)
+{
+	struct iface_dev *ifd = obj;
+	remove_list_entry(&ifd->ifd_entry);
+	pfree(ifd->id_rname);
+	pfree(ifd);
+}
+
 static void add_iface_dev(const struct raw_iface *ifp, struct logger *logger)
 {
 	where_t where = HERE;
-	struct iface_dev *ifd = refcnt_alloc(struct iface_dev, where);
+	struct iface_dev *ifd = refcnt_alloc(struct iface_dev, free_iface_dev, where);
 	ifd->id_rname = clone_str(ifp->name, "real device name");
 	ifd->id_nic_offload = kernel_ops->detect_offload(ifp, logger);
 	ifd->id_address = ifp->addr;
@@ -110,18 +118,9 @@ void add_or_keep_iface_dev(struct raw_iface *ifp, struct logger *logger)
 	add_iface_dev(ifp, logger);
 }
 
-static void free_iface_dev(struct iface_dev **ifd,
-			   where_t where UNUSED)
-{
-	remove_list_entry(&(*ifd)->ifd_entry);
-	pfree((*ifd)->id_rname);
-	pfree((*ifd));
-	*ifd = NULL;
-}
-
 void release_iface_dev(struct iface_dev **id)
 {
-	delete_ref(id, free_iface_dev);
+	delref(id, HERE);
 }
 
 static void free_dead_ifaces(struct logger *logger)
@@ -184,7 +183,7 @@ static void free_dead_ifaces(struct logger *logger)
 	 */
 	if (some_dead || some_new) {
 		dbg("updating interfaces - checking orientation");
-		check_orientations();
+		check_orientations(logger);
 	}
 }
 
@@ -212,7 +211,8 @@ struct iface_endpoint *bind_iface_endpoint(struct iface_dev *ifd, const struct i
 					   bool float_nat_initiator,
 					   struct logger *logger)
 {
-	ip_endpoint local_endpoint = endpoint3(io->protocol, &ifd->id_address, port);
+	ip_endpoint local_endpoint = endpoint_from_address_protocol_port(ifd->id_address,
+									 io->protocol, port);
 	if (esp_encapsulation_enabled &&
 	    io->protocol->encap_esp->encap_type == 0) {
 		endpoint_buf b;
@@ -233,7 +233,7 @@ struct iface_endpoint *bind_iface_endpoint(struct iface_dev *ifd, const struct i
 	struct iface_endpoint *ifp = alloc_thing(struct iface_endpoint,
 					     "struct iface_endpoint");
 	ifp->fd = fd;
-	ifp->ip_dev = add_ref(ifd);
+	ifp->ip_dev = addref(ifd, HERE);
 	ifp->io = io;
 	ifp->esp_encapsulation_enabled = esp_encapsulation_enabled;
 	ifp->float_nat_initiator = float_nat_initiator;
@@ -273,7 +273,7 @@ static void add_new_ifaces(struct logger *logger)
 			if (bind_iface_endpoint(ifd, &udp_iface_io, ip_hport(IKE_UDP_PORT),
 						false /*esp_encapsulation_enabled*/,
 						true /*float_nat_initiator*/,
-						logger)  == NULL) {
+						logger) == NULL) {
 				ifd->ifd_change = IFD_DELETE;
 				continue;
 			}
@@ -332,20 +332,7 @@ void listen_on_iface_endpoint(struct iface_endpoint *ifp, struct logger *logger)
 
 static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 {
-	int j;	/* index into buf */
-	struct ifconf ifconf;
-	struct ifreq *buf = NULL;	/* for list of interfaces -- arbitrary limit */
-	struct raw_iface *rifaces = NULL;
-	static const int on = true;     /* by-reference parameter; constant, we hope */
-
-	/*
-	 * Current upper bound on number of interfaces.
-	 * Tricky: because this is a static, we won't have to start from
-	 * 64 in subsequent calls.
-	 */
-	static int num = 64;
-
-        /* Get a UDP socket */
+	/* Get a UDP socket */
 
 	int udp_sock = safe_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (udp_sock == -1) {
@@ -359,6 +346,7 @@ static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 	 * Without SO_REUSEADDR, bind() of udp_sock will cause
 	 * 'address already in use?
 	 */
+	static const int on = true;     /* by-reference parameter; constant, we hope */
 	if (setsockopt(udp_sock, SOL_SOCKET, SO_REUSEADDR,
 		       (const void *)&on, sizeof(on)) < 0) {
 		fatal_errno(PLUTO_EXIT_FAIL, logger, errno,
@@ -369,9 +357,10 @@ static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 	 * bind the socket; somewhat convoluted as BSD as size field.
 	 */
 	{
-		ip_address any = address_any(&ipv4_info);
-		ip_endpoint any_ep = endpoint3(&ip_protocol_udp, &any, ip_hport(IKE_UDP_PORT));
-		ip_sockaddr any_sa = sockaddr_from_endpoint(&any_ep);
+		ip_endpoint any_ep = endpoint_from_address_protocol_port(ipv4_info.address.any,
+									 &ip_protocol_udp,
+									 ip_hport(IKE_UDP_PORT));
+		ip_sockaddr any_sa = sockaddr_from_endpoint(any_ep);
 		if (bind(udp_sock, &any_sa.sa.sa, any_sa.len) < 0) {
 			endpoint_buf eb;
 			fatal_errno(PLUTO_EXIT_FAIL, logger, errno,
@@ -380,20 +369,30 @@ static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 		}
 	}
 
-	/* a million interfaces is probably the maximum, ever... */
+	/*
+	 * Load buf with array of raw interfaces from kernel.
+	 *
+	 * We have to guess at the upper bound (num).
+	 * If we guess low, double num and repeat.
+	 * But don't go crazy: stop before 1024**2.
+	 *
+	 * Tricky: num is a static so that we won't have to start from
+	 * 64 in subsequent calls to find_raw_ifaces4.
+	 */
+	static int num = 64;
+	struct ifconf ifconf;
+	struct ifreq *buf = NULL;	/* for list of interfaces -- arbitrary limit */
 	for (; num < (1024 * 1024); num *= 2) {
 		/* Get num local interfaces.  See netdevice(7). */
 		ifconf.ifc_len = num * sizeof(struct ifreq);
 
-		struct ifreq *tmpbuf = realloc(buf, ifconf.ifc_len);
-
-		if (tmpbuf == NULL) {
-			free(buf);
+		free(buf);
+		buf = malloc(ifconf.ifc_len);
+		if (buf == NULL) {
 			fatal_errno(PLUTO_EXIT_FAIL, logger, errno,
-				    "realloc of %d in find_raw_ifaces4()",
+				    "malloc of %d in find_raw_ifaces4()",
 				    ifconf.ifc_len);
 		}
-		buf = tmpbuf;
 		memset(buf, 0xDF, ifconf.ifc_len);	/* stomp */
 		ifconf.ifc_buf = (void *) buf;
 
@@ -408,7 +407,8 @@ static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 	}
 
 	/* Add an entry to rifaces for each interesting interface. */
-	for (j = 0; (j + 1) * sizeof(struct ifreq) <= (size_t)ifconf.ifc_len; j++) {
+	struct raw_iface *rifaces = NULL;
+	for (int j = 0; (j + 1) * sizeof(struct ifreq) <= (size_t)ifconf.ifc_len; j++) {
 		struct raw_iface ri;
 		const struct sockaddr_in *rs =
 			(struct sockaddr_in *) &buf[j].ifr_addr;
@@ -459,7 +459,7 @@ static struct raw_iface *find_raw_ifaces4(struct logger *logger)
 		rifaces = clone_thing(ri, "struct raw_iface");
 	}
 
-	free(buf);	/* was allocated via realloc() */
+	free(buf);	/* was allocated via malloc() */
 	close(udp_sock);
 	return rifaces;
 }
@@ -490,10 +490,10 @@ void find_ifaces(bool rm_dead, struct logger *logger)
 	}
 }
 
-struct iface_endpoint *find_iface_endpoint_by_local_endpoint(ip_endpoint *local_endpoint)
+struct iface_endpoint *find_iface_endpoint_by_local_endpoint(ip_endpoint local_endpoint)
 {
 	for (struct iface_endpoint *p = interfaces; p != NULL; p = p->next) {
-		if (endpoint_eq(local_endpoint, &p->local_endpoint)) {
+		if (endpoint_eq_endpoint(local_endpoint, p->local_endpoint)) {
 			return p;
 		}
 	}

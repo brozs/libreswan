@@ -17,6 +17,8 @@
  * for more details.
  */
 
+#include <sys/socket.h>		/* for AF_INET/AF_INET6/AF_UNSPEC */
+
 #include "ietf_constants.h"
 #include "ip_info.h"
 #include "passert.h"
@@ -97,45 +99,58 @@ static size_t jam_ipv6_address(struct jambuf *buf, const struct ip_info *afi, co
 	return s;
 }
 
+static ip_address address_from_ipv4_sockaddr(const ip_sockaddr sa)
+{
+	passert(sa.sa.sa.sa_family == AF_INET);
+	return address_from_in_addr(&sa.sa.sin.sin_addr);
+}
+
+static ip_address address_from_ipv6_sockaddr(const ip_sockaddr sa)
+{
+	passert(sa.sa.sa.sa_family == AF_INET6);
+	return address_from_in6_addr(&sa.sa.sin6.sin6_addr);
+}
+
+static ip_port port_from_ipv4_sockaddr(const ip_sockaddr sa)
+{
+	passert(sa.sa.sa.sa_family == AF_INET);
+	return ip_nport(sa.sa.sin.sin_port);
+}
+
+static ip_port port_from_ipv6_sockaddr(const ip_sockaddr sa)
+{
+	passert(sa.sa.sa.sa_family == AF_INET6);
+	return ip_nport(sa.sa.sin6.sin6_port);
+}
+
 /*
  * Construct well known addresses.
  */
 
-#define IPv4_ADDRESS .is_address = true, .version = 4
-#define IPv6_ADDRESS .is_address = true, .version = 6
-
-#define IPv4_ENDPOINT .is_endpoint = true, .version = 4
-#define IPv6_ENDPOINT .is_endpoint = true, .version = 6
+#define IPv4_FF { { 255, 255, 255, 255, }, }
 
 const struct ip_info ipv4_info = {
 
-	.ip_version = 4,
+	.ip_version = IPv4,
 	.ip_size = sizeof(struct in_addr),
 	.ip_name = "IPv4",
 	.mask_cnt = 32,
 
-	/* ip_address */
-	.address = {
-		.any = { IPv4_ADDRESS, }, /* 0.0.0.0 */
-		.loopback = { IPv4_ADDRESS, .bytes = { { 127, 0, 0, 1, }, }, },
-	},
+	/* ip_address - .address.any matches grep */
+	.address.any = { .is_set = true, .version = IPv4, }, /* 0.0.0.0 */
+	.address.loopback = { .is_set = true, .version = IPv4, .bytes = { { 127, 0, 0, 1, }, }, },
 
-	/* ip_endpoint */
-	.endpoint = {
-		.any = { IPv4_ENDPOINT, }, /* 0.0.0.0:0 */
-	},
+	/* ip_subnet - .subnet.any matches grep */
+	.subnet.zero = { .is_set = true, .version = IPv4, .maskbits = 32, }, /* 0.0.0.0/32 */
+	.subnet.all = { .is_set = true, .version = IPv4, .maskbits = 0, }, /* 0.0.0.0/0 */
 
-	/* ip_subnet */
-	.subnet = {
-		.none = { .is_subnet = true, .version = 4, .maskbits = 32, }, /* 0.0.0.0/32 */
-		.all = { .is_subnet = true, .version = 4, .maskbits = 0, }, /* 0.0.0.0/0 */
-	},
+	/* ip_range - .range.any matches grep */
+	.range.zero = { .is_set = true, .version = IPv4, },
+	.range.all = { .is_set = true, .version = IPv4, .end = IPv4_FF, },
 
-	/* ip_selector */
-	.selector = {
-		.none = { .is_selector = true, .version = 4, .maskbits = 32, }, /* 0.0.0.0/0 */
-		.all = { .is_selector = true, .version = 4, .maskbits = 0, }, /* 0.0.0.0/0 */
-	},
+	/* ip_selector - .selector.any matches grep */
+	.selector.zero = { .is_set = true, .version = IPv4, .maskbits = 32, }, /* 0.0.0.0/0 */
+	.selector.all = { .is_set = true, .version = IPv4, .maskbits = 0, }, /* 0.0.0.0/0 */
 
 	/* ike */
 	.ikev1_max_fragment_size = ISAKMP_V1_FRAG_MAXLEN_IPv4,
@@ -145,6 +160,11 @@ const struct ip_info ipv4_info = {
 	.af = AF_INET,
 	.af_name = "AF_INET",
 	.sockaddr_size = sizeof(struct sockaddr_in),
+	.address_from_sockaddr = address_from_ipv4_sockaddr,
+	.port_from_sockaddr = port_from_ipv4_sockaddr,
+
+	/* IKEv2 Traffic Selector */
+	.ikev2_ts_addr_range_type = IKEv2_TS_IPV4_ADDR_RANGE,
 
 	/* id */
 	.id_ip_addr = ID_IPV4_ADDR,
@@ -155,35 +175,30 @@ const struct ip_info ipv4_info = {
 	.jam_address = jam_ipv4_address,
 };
 
+#define IPv6_FF { { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, }, }
+
 const struct ip_info ipv6_info = {
 
-	.ip_version = 6,
+	.ip_version = IPv6,
 	.ip_size = sizeof(struct in6_addr),
 	.ip_name = "IPv6",
 	.mask_cnt = 128,
 
-	/* ip_address */
-	.address = {
-		.any = { IPv6_ADDRESS, }, /* :: */
-		.loopback = { IPv6_ADDRESS, .bytes = { { [15] = 1, }, }, }, /* ::1 */
-	},
+	/* ip_address - .address.any matches grep */
+	.address.any = { .is_set = true, .version = IPv6, }, /* :: */
+	.address.loopback = { .is_set = true, .version = IPv6, .bytes = { { [15] = 1, }, }, }, /* ::1 */
 
-	/* ip_endpoint */
-	.endpoint = {
-		.any = { IPv6_ENDPOINT, }, /* [::]:0 */
-	},
+	/* ip_subnet - .subnet.any matches grep */
+	.subnet.zero = { .is_set = true, .version = IPv6, .maskbits = 128, }, /* ::/128 */
+	.subnet.all = { .is_set = true, .version = IPv6, .maskbits = 0, }, /* ::/0 */
 
-	/* ip_subnet */
-	.subnet = {
-		.none = { .is_subnet = true, .version = 6, .maskbits = 128, }, /* ::/128 */
-		.all = { .is_subnet = true, .version = 6, .maskbits = 0, }, /* ::/0 */
-	},
+	/* ip_range - .range.any matches grep */
+	.range.zero = { .is_set = true, .version = IPv6, },
+	.range.all = { .is_set = true, .version = IPv6, .end = IPv6_FF, },
 
-	/* ip_selector */
-	.selector = {
-		.none = { .is_selector = true, .version = 6, .maskbits = 128, }, /* ::/0 */
-		.all = { .is_selector = true, .version = 6, .maskbits = 0, }, /* ::/0 */
-	},
+	/* ip_selector - .selector.any matches grep */
+	.selector.zero = { .is_set = true, .version = IPv6, .maskbits = 128, }, /* ::/0 */
+	.selector.all = { .is_set = true, .version = IPv6, .maskbits = 0, }, /* ::/0 */
 
 	/* ike */
 	.ikev1_max_fragment_size = ISAKMP_V1_FRAG_MAXLEN_IPv6,
@@ -193,6 +208,11 @@ const struct ip_info ipv6_info = {
 	.af = AF_INET6,
 	.af_name = "AF_INET6",
 	.sockaddr_size = sizeof(struct sockaddr_in6),
+	.address_from_sockaddr = address_from_ipv6_sockaddr,
+	.port_from_sockaddr = port_from_ipv6_sockaddr,
+
+	/* IKEv2 Traffic Selector */
+	.ikev2_ts_addr_range_type = IKEv2_TS_IPV6_ADDR_RANGE,
 
 	/* id */
 	.id_ip_addr = ID_IPV6_ADDR,
@@ -221,8 +241,8 @@ const struct ip_info *ip_version_info(unsigned version)
 {
 	static const struct ip_info *ip_types[] = {
 		[0] = NULL,
-		[4] = &ipv4_info,
-		[6] = &ipv6_info,
+		[IPv4] = &ipv4_info,
+		[IPv6] = &ipv6_info,
 	};
 	passert(version < elemsof(ip_types));
 	return ip_types[version];

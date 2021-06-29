@@ -59,7 +59,7 @@ struct v2_msgid_windows {
 
 /*
  * The Message ID for the state's in-progress exchanges.  If no
- * exchange is in progress then it's value is -1.
+ * exchange is in progress then its value is -1.
  *
  * The INITIATOR Message ID is valid from the time the request is sent
  * (earlier?) through to when the response is received.  Lookups then
@@ -82,15 +82,6 @@ void v2_msgid_free(struct state *st);
 
 void v2_msgid_start_responder(struct ike_sa *ike, struct state *responder,
 			      const struct msg_digest *md);
-
-void v2_msgid_switch_responder_to_child(struct ike_sa *ike, struct child_sa *child,
-					struct msg_digest *md, where_t where);
-void v2_msgid_switch_responder_from_aborted_child(struct ike_sa *ike, struct child_sa **child,
-						  struct msg_digest *md, where_t where);
-
-void v2_msgid_switch_initiator(struct ike_sa *ike, struct child_sa *child,
-			       const struct msg_digest *md);
-
 void v2_msgid_cancel_responder(struct ike_sa *ike, struct state *responder,
 			       const struct msg_digest *md);
 

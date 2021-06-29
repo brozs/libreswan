@@ -1,9 +1,21 @@
 /testing/guestbin/swan-prep
 east #
+ # build install se module
+east #
+ ../../guestbin/semodule.sh ipsecspd.te
+Compiling targeted ipsecspd module
+Creating targeted ipsecspd.pp policy package
+rm tmp/ipsecspd.mod tmp/ipsecspd.mod.fc
+ipsecspd.pp installed
+east #
+ setsebool domain_can_mmap_files=1
+east #
+ setsebool nis_enabled=1
+east #
  ipsec start
 Redirecting to: [initsystem]
 east #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 east #
  ipsec auto --add labeled
 002 "labeled": added IKEv1 connection
@@ -11,14 +23,7 @@ east #
  echo "initdone"
 initdone
 east #
- ipsec whack --shutdown
-east #
- semodule -r ipsec-test-module
-libsemanage.semanage_direct_remove_key: Unable to remove module ipsec-test-module at priority 400. (No such file or directory).
-semodule:  Failed!
-east #
- ../bin/check-for-core.sh
-east #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
+ semodule -r ipsecspd
+libsemanage.semanage_direct_remove_key: Removing last ipsecspd module (no other ipsecspd module exists at another priority).
 east #
  

@@ -6,7 +6,7 @@ west #
  ipsec start
 Redirecting to: [initsystem]
 west #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 west #
  ipsec auto --add san
 002 "san": added IKEv2 connection
@@ -22,8 +22,11 @@ west #
 1v2 "san" #1: initiating IKEv2 connection
 1v2 "san" #1: sent IKE_SA_INIT request
 1v2 "san" #1: sent IKE_AUTH request {auth=IKEv2 cipher=AES_GCM_16_256 integ=n/a prf=HMAC_SHA2_512 group=MODP2048}
-002 "san" #1: IKE SA authentication request rejected by peer: AUTHENTICATION_FAILED
-000 "san" #2: scheduling retry attempt 1 of an unlimited number, but releasing whack
+003 "san" #1: IKE SA authentication request rejected by peer: AUTHENTICATION_FAILED
+036 "san" #1: encountered fatal error in state STATE_PARENT_I2
+002 "san" #1: deleting other state #2 (STATE_V2_IKE_AUTH_CHILD_I0) and NOT sending notification
+002 "san" #1: deleting state (STATE_PARENT_I2) and NOT sending notification
+002 "san" #1: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
 west #
  echo "done"
 done
@@ -32,9 +35,5 @@ west #
 west #
  grep "ID type" /tmp/pluto.log | sort | uniq
 |    ID type: ID_IPV4_ADDR (0x1)
-west #
- ../bin/check-for-core.sh
-west #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 west #
  

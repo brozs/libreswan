@@ -87,6 +87,7 @@
 #include <blapit.h>
 #include "crypt_dh.h"
 #include "unpack.h"
+#include "orient.h"
 
 #ifdef USE_XFRM_INTERFACE
 # include "kernel_xfrm_interface.h"
@@ -167,18 +168,18 @@ static bool emit_subnet_id(const ip_subnet net,
 	if (!out_struct(&id, &isakmp_ipsec_identification_desc, outs, &id_pbs))
 		return FALSE;
 
-	ip_address tp = subnet_prefix(&net);
-	diag_t d = pbs_out_address(&id_pbs, &tp, "client network");
+	ip_address tp = subnet_prefix(net);
+	diag_t d = pbs_out_address(&id_pbs, tp, "client network");
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 		return false;
 	}
 
 	if (!usehost) {
-		ip_address tm = subnet_prefix_mask(&net);
-		diag_t d = pbs_out_address(&id_pbs, &tm, "client mask");
+		ip_address tm = subnet_prefix_mask(net);
+		diag_t d = pbs_out_address(&id_pbs, tm, "client mask");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, outs->outs_logger, &d, "%s", "");
 			return false;
 		}
 	}
@@ -379,7 +380,7 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 	/* IDB and IDTYPENAME must have same scope. */
 	enum ike_id_type id_type = id->isaiid_idtype;
 	esb_buf idb;
-	const char *idtypename = enum_show(&ike_idtype_names, id_type, &idb);
+	const char *idtypename = enum_show(&ike_id_type_names, id_type, &idb);
 
 	switch (id_type) {
 	case ID_IPV4_ADDR:
@@ -412,11 +413,11 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 		ip_address temp_address;
 		diag_t d = pbs_in_address(id_pbs, &temp_address, afi, "ID address");
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "%s", "");
+			llog_diag(RC_LOG, logger, &d, "%s", "");
 			return false;
 		}
 		/* i.e., "zero" */
-		if (address_is_any(&temp_address)) {
+		if (address_is_any(temp_address)) {
 			ipstr_buf b;
 			llog(RC_LOG_SERIOUS, logger,
 				    "%s ID payload %s is invalid (%s) in Quick I1",
@@ -424,7 +425,7 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 			/* XXX Could send notification back */
 			return false;
 		}
-		net = subnet_from_address(&temp_address);
+		net = subnet_from_address(temp_address);
 		subnet_buf b;
 		dbg("%s is %s", which, str_subnet(&net, &b));
 		break;
@@ -438,19 +439,19 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 		ip_address temp_address;
 		d = pbs_in_address(id_pbs, &temp_address, afi, "ID address");
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "%s", "");
+			llog_diag(RC_LOG, logger, &d, "%s", "");
 			return false;
 		}
 
 		ip_address temp_mask;
 		d = pbs_in_address(id_pbs, &temp_mask, afi, "ID mask");
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "%s", "");
+			llog_diag(RC_LOG, logger, &d, "%s", "");
 			return false;
 		}
 
-		err_t ughmsg = address_mask_to_subnet(&temp_address, &temp_mask, &net);
-		if (ughmsg == NULL && subnet_contains_no_addresses(&net)) {
+		err_t ughmsg = address_mask_to_subnet(temp_address, temp_mask, &net);
+		if (ughmsg == NULL && subnet_is_zero(net)) {
 			/* i.e., ::/128 or 0.0.0.0/32 */
 			ughmsg = "subnet contains no addresses";
 		}
@@ -474,23 +475,19 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 		ip_address temp_address_from;
 		d = pbs_in_address(id_pbs, &temp_address_from, afi, "ID from address");
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "%s", "");
+			llog_diag(RC_LOG, logger, &d, "%s", "");
 			return false;
 		}
 
 		ip_address temp_address_to;
 		d = pbs_in_address(id_pbs, &temp_address_to, afi, "ID to address");
 		if (d != NULL) {
-			log_diag(RC_LOG, logger, &d, "%s", "");
+			llog_diag(RC_LOG, logger, &d, "%s", "");
 			return false;
 		}
 
-		err_t ughmsg = rangetosubnet(&temp_address_from,
-					     &temp_address_to, &net);
-		if (ughmsg == NULL && subnet_contains_no_addresses(&net)) {
-			/* i.e., ::/128 or 0.0.0.0/32 */
-			ughmsg = "range contains no addresses";
-		}
+		err_t ughmsg = addresses_to_nonzero_subnet(temp_address_from,
+							   temp_address_to, &net);
 		if (ughmsg != NULL) {
 			address_buf a, b;
 			llog(RC_LOG_SERIOUS, logger,
@@ -518,7 +515,7 @@ static bool decode_net_id(struct isakmp_ipsec_id *id,
 	}
 
 	ip_port port = ip_hport(id->isaiid_port);
-	*client = selector_from_subnet_protocol_port(&net, protocol, port);
+	*client = selector_from_subnet_protocol_port(net, protocol, port);
 
 	return true;
 }
@@ -544,7 +541,7 @@ static bool check_net_id(struct isakmp_ipsec_id *id,
 	/* toss the proto/port */
 	ip_subnet subnet_temp = selector_subnet(selector_temp);
 
-	if (!samesubnet(&net, &subnet_temp)) {
+	if (!subnet_eq_subnet(net, subnet_temp)) {
 		subnet_buf subrec;
 		subnet_buf subxmt;
 		llog(RC_LOG_SERIOUS, logger,
@@ -614,7 +611,7 @@ void quick_outI1(struct fd *whack_sock,
 		 lset_t policy,
 		 unsigned long try,
 		 so_serial_t replacing,
-		 chunk_t sec_label)
+		 shunk_t sec_label)
 {
 	struct state *st = ikev1_duplicate_state(c, isakmp_sa, whack_sock);
 	passert(c != NULL);
@@ -626,9 +623,9 @@ void quick_outI1(struct fd *whack_sock,
 		dbg("pending phase 2 with base security context \"%.*s\"",
 		    (int)c->spd.this.sec_label.len, c->spd.this.sec_label.ptr);
 		if (sec_label.len != 0) {
-			st->st_acquired_sec_label = clone_hunk(sec_label, "st_acquired_sec_label");
-			dbg("pending phase 2 with 'instance' security context \"%.*s\"",
-				(int)sec_label.len, sec_label.ptr);
+			st->st_v1_acquired_sec_label = clone_hunk(sec_label, "st_acquired_sec_label");
+			dbg("pending phase 2 with 'instance' security context '"PRI_SHUNK"'",
+			    pri_shunk(sec_label));
 		}
 	}
 
@@ -860,7 +857,7 @@ static stf_status quick_outI1_continue_tail(struct state *st,
 		}
 	}
 
-	/* finish computing  HASH(1), inserting it in output */
+	/* finish computing HASH(1), inserting it in output */
 	fixup_v1_HASH(st, &hash_fixup, st->st_v1_msgid.id, rbody.cur);
 
 	/* encrypt message, except for fixed part of header */
@@ -927,7 +924,7 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 
 stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 {
-	passert(p1st != NULL && p1st == md->st);
+	passert(p1st != NULL && p1st == md->v1_st);
 	struct connection *c = p1st->st_connection;
 	ip_selector local_client;
 	ip_selector remote_client;
@@ -969,7 +966,7 @@ stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 		if (IDci->payload.ipsec_id.isaiid_idtype == ID_FQDN) {
 			log_state(RC_LOG_SERIOUS, p1st,
 				  "Applying workaround for MS-818043 NAT-T bug");
-			remote_client = selector_from_address_protocol_port(&c->spd.that.host_addr,
+			remote_client = selector_from_address_protocol_port(c->spd.that.host_addr,
 									    remote_protocol,
 									    remote_port);
 		}
@@ -996,30 +993,22 @@ stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 		    (p1st->hidden_variables.st_nat_traversal & NAT_T_WITH_NATOA) &&
 		    (IDci->payload.ipsec_id.isaiid_idtype == ID_FQDN)) {
 			struct hidden_variables hv;
-			char idfqdn[IDTOA_BUF];
-			size_t idlen = pbs_room(&IDcr->pbs);
-
-			if (idlen >= sizeof(idfqdn)) {
-				/* ??? truncation seems rude and dangerous */
-				idlen = sizeof(idfqdn) - 1;
-			}
-			/* ??? what should happen if fqdn contains '\0'? */
-			memcpy(idfqdn, IDcr->pbs.cur, idlen);
-			idfqdn[idlen] = '\0';
+			shunk_t idfqdn = pbs_in_left_as_shunk(&IDcr->pbs);
 
 			hv = p1st->hidden_variables;
 			nat_traversal_natoa_lookup(md, &hv, p1st->st_logger);
 
-			if (address_is_specified(&hv.st_nat_oa)) {
-				remote_client = selector_from_address_protocol_port(&hv.st_nat_oa,
+			if (address_is_specified(hv.st_nat_oa)) {
+				remote_client = selector_from_address_protocol_port(hv.st_nat_oa,
 										    remote_protocol,
 										    remote_port);
-				selector_buf buf;
-				log_state(RC_LOG_SERIOUS, p1st,
-					  "IDci was FQDN: %s, using NAT_OA=%s %d as IDci",
-					  idfqdn, str_selector(&remote_client, &buf),
-					  (address_is_unset(&hv.st_nat_oa) ||
-					   address_is_any(&hv.st_nat_oa)/*XXX: always 0?*/));
+				LLOG_JAMBUF(RC_LOG_SERIOUS, p1st->st_logger, buf) {
+					jam(buf, "IDci was FQDN: ");
+					jam_sanitized_hunk(buf, idfqdn);
+					jam(buf, ", using NAT_OA=");
+					jam_selector(buf, &remote_client);
+					jam(buf, " as IDci");
+				}
 			}
 		}
 	} else {
@@ -1027,8 +1016,8 @@ stf_status quick_inI1_outR1(struct state *p1st, struct msg_digest *md)
 		if (address_type(&c->spd.this.host_addr) != address_type(&c->spd.that.host_addr))
 			return STF_FAIL;
 
-		local_client = selector_from_address(&c->spd.this.host_addr);
-		remote_client = selector_from_address(&c->spd.that.host_addr);
+		local_client = selector_from_address(c->spd.this.host_addr);
+		remote_client = selector_from_address(c->spd.that.host_addr);
 	}
 
 	struct crypt_mac new_iv;
@@ -1051,7 +1040,7 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 					const ip_selector *remote_client,
 					struct crypt_mac new_iv)
 {
-	pexpect(p1st == md->st);
+	pexpect(p1st == md->v1_st);
 	struct connection *c = p1st->st_connection;
 	struct hidden_variables hv;
 
@@ -1091,18 +1080,18 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 
 				struct end local = c->spd.this;
 				local.client = *local_client;
-				local.has_client = !selector_is_address(local_client, &local.host_addr);
-				local.protocol = selector_protocol(local_client)->ipproto;
-				local.port = selector_port(local_client).hport;
+				local.has_client = !selector_eq_address(*local_client, local.host_addr);
+				local.protocol = selector_protocol(*local_client)->ipproto;
+				local.port = selector_port(*local_client).hport;
 				jam_end(buf, &local, NULL, /*left?*/true, LEMPTY, oriented(*c));
 
 				jam(buf, "...");
 
 				struct end remote = c->spd.that;
 				remote.client = *remote_client;
-				remote.has_client = !selector_is_address(remote_client, &remote.host_addr);
-				remote.protocol = selector_protocol(remote_client)->ipproto;
-				remote.port = selector_port(remote_client).hport;
+				remote.has_client = !selector_eq_address(*remote_client, remote.host_addr);
+				remote.protocol = selector_protocol(*remote_client)->ipproto;
+				remote.port = selector_port(*remote_client).hport;
 				jam_end(buf, &remote, NULL, /*left?*/false, LEMPTY, oriented(*c));
 			}
 			return STF_FAIL + INVALID_ID_INFORMATION;
@@ -1144,7 +1133,7 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 
 		/* fill in the client's true port */
 		if (c->spd.that.has_port_wildcard) {
-			int port = selector_port(remote_client).hport;
+			int port = selector_port(*remote_client).hport;
 			update_selector_hport(&c->spd.that.client, port);
 			c->spd.that.port = port;
 			c->spd.that.has_port_wildcard = false;
@@ -1156,7 +1145,7 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 			c->spd.that.has_client = true;
 			virtual_ip_delref(&c->spd.that.virt, HERE);
 
-			if (selector_is_address(remote_client, &c->spd.that.host_addr)) {
+			if (selector_eq_address(*remote_client, c->spd.that.host_addr)) {
 				c->spd.that.has_client = false;
 			}
 
@@ -1217,7 +1206,7 @@ static stf_status quick_inI1_outR1_tail(struct state *p1st, struct msg_digest *m
 			/* ??? this partially overwrites what was done via hv */
 			st->hidden_variables.st_nat_traversal =
 				p1st->hidden_variables.st_nat_traversal;
-			nat_traversal_change_port_lookup(md, md->st);
+			nat_traversal_change_port_lookup(md, md->v1_st);
 			v1_maybe_natify_initiator_endpoints(st, HERE);
 		} else {
 			/* ??? this partially overwrites what was done via hv */
@@ -1602,32 +1591,24 @@ stf_status quick_inR1_outI2_tail(struct state *st, struct msg_digest *md)
 			    (st->hidden_variables.st_nat_traversal &
 			     NAT_T_WITH_NATOA) &&
 			    IDcr->payload.ipsec_id.isaiid_idtype == ID_FQDN) {
-				char idfqdn[IDTOA_BUF];
-				size_t idlen = pbs_room(&IDcr->pbs);
-
-				if (idlen >= sizeof(idfqdn)) {
-					/* ??? truncation seems rude and dangerous */
-					idlen = sizeof(idfqdn) - 1;
-				}
-				/* ??? what should happen if fqdn contains '\0'? */
-				memcpy(idfqdn, IDcr->pbs.cur, idlen);
-				idfqdn[idlen] = '\0';
-
+				shunk_t idfqdn = pbs_in_left_as_shunk(&IDcr->pbs);
 				st->st_connection->spd.that.client =
-					selector_from_address(&st->hidden_variables.st_nat_oa);
-				subnet_buf buf;
-				log_state(RC_LOG_SERIOUS, st,
-					  "IDcr was FQDN: %s, using NAT_OA=%s as IDcr",
-					  idfqdn,
-					  str_selector_subnet(&st->st_connection->spd.that.client, &buf));
+					selector_from_address(st->hidden_variables.st_nat_oa);
+				LLOG_JAMBUF(RC_LOG_SERIOUS, st->st_logger, buf) {
+					jam(buf, "IDcr was FQDN: ");
+					jam_sanitized_hunk(buf, idfqdn);
+					jam(buf, ", using NAT_OA=");
+					jam_selector_subnet(buf, &st->st_connection->spd.that.client);
+					jam(buf, " as IDcr");
+				}
 			}
 		} else {
 			/*
 			 * No IDci, IDcr: we must check that the
 			 * defaults match our proposal.
 			 */
-			if (!selector_is_address(&c->spd.this.client, &c->spd.this.host_addr) ||
-			    !selector_is_address(&c->spd.that.client, &c->spd.that.host_addr)) {
+			if (!selector_eq_address(c->spd.this.client, c->spd.this.host_addr) ||
+			    !selector_eq_address(c->spd.that.client, c->spd.that.host_addr)) {
 				log_state(RC_LOG_SERIOUS, st,
 					  "IDci, IDcr payloads missing in message but default does not match proposal");
 				return STF_FAIL + INVALID_ID_INFORMATION;

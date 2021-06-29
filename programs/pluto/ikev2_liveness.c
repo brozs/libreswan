@@ -47,7 +47,7 @@ static stf_status send_v2_liveness_request(struct ike_sa *ike,
 	 * for the other end to identify which child this is for!
 	 *
 	 * XXX: See record 'n'_send for how screwed up all this is:
-	 * need to pass in the CHILD SA so that it's liveness
+	 * need to pass in the CHILD SA so that its liveness
 	 * timestamp (and not the IKE) gets updated.
 	 */
 	pstats_ike_dpd_sent++;
@@ -101,8 +101,8 @@ void liveness_check(struct state *st)
 		 */
 		dbg("liveness: state #%lu has no IKE SA; deleting orphaned child",
 		    st->st_serialno);
-		event_delete(EVENT_SO_DISCARD, st);
-		event_schedule(EVENT_SO_DISCARD, deltatime(0), st);
+		event_delete(EVENT_SA_DISCARD, st);
+		event_schedule(EVENT_SA_DISCARD, deltatime(0), st);
 		return;
 	}
 	struct ike_sa *ike = pexpect_ike_sa(pst);

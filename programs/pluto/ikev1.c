@@ -154,7 +154,7 @@
 #include "nat_traversal.h"
 #include "vendor.h"
 #include "ikev1_dpd.h"
-#include "hostpair.h"
+#include "host_pair.h"
 #include "ip_address.h"
 #include "ikev1_hash.h"
 #include "ike_alg_encrypt_ops.h"	/* XXX: oops */
@@ -164,6 +164,7 @@
 #include "ip_selector.h"
 #include "unpack.h"
 #include "pending.h"
+#include "state_db.h"
 
 #ifdef HAVE_NM
 #include "kernel.h"
@@ -287,7 +288,7 @@ static const struct state_v1_microcode v1_state_microcode_table[] = {
 	{ STATE_MAIN_R0, STATE_MAIN_R1,
 	  SMF_ALL_AUTH | SMF_REPLY,
 	  P(SA), P(VID) | P(CR),
-	  EVENT_SO_DISCARD,
+	  EVENT_SA_DISCARD,
 	  FM(main_inI1_outR1),
 	  .hash_type = V1_HASH_NONE, },
 
@@ -482,7 +483,7 @@ static const struct state_v1_microcode v1_state_microcode_table[] = {
 	{ STATE_AGGR_R0, STATE_AGGR_R1,
 	  SMF_PSK_AUTH | SMF_DS_AUTH | SMF_REPLY,
 	  P(SA) | P(KE) | P(NONCE) | P(ID), P(VID) | P(NATD_RFC),
-	  EVENT_SO_DISCARD,
+	  EVENT_SA_DISCARD,
 	  FM(aggr_inI1_outR1),
 	  /* N/A */
 	  .hash_type = V1_HASH_NONE, },
@@ -750,9 +751,8 @@ static const struct state_v1_microcode v1_state_microcode_table[] = {
 #undef P
 };
 
-void init_ikev1(void)
+void init_ikev1(struct logger *logger)
 {
-	struct logger logger[1] = { GLOBAL_LOGGER(null_fd), };
 	dbg("checking IKEv1 state table");
 
 	/*
@@ -905,8 +905,8 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 	/*
 	 * XXX: Danger: ST is deleted midway through this function.
 	 */
-	pexpect(st == md->st);
-	st = md->st;    /* may be NULL */
+	pexpect(st == md->v1_st);
+	st = md->v1_st;    /* may be NULL */
 
 	struct payload_digest *const n_pld = md->chain[ISAKMP_NEXT_N];
 
@@ -938,7 +938,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 		case R_U_THERE:
 			if (st == NULL) {
 				llog(RC_LOG, md->md_logger,
-				     "received bogus  R_U_THERE informational message");
+				     "received bogus R_U_THERE informational message");
 				return STF_IGNORE;
 			}
 			return dpd_inI_outR(st, n, n_pbs);
@@ -968,7 +968,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 						  st->hidden_variables.st_malformed_sent,
 						  st->hidden_variables.st_malformed_received);
 					delete_state(st);
-					md->st = st = NULL;
+					md->v1_st = st = NULL;
 				}
 			}
 
@@ -999,7 +999,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 				ip_address new_peer = address_from_in_addr(&in);
 
 				/* is all zeros? */
-				if (address_is_any(&new_peer)) {
+				if (address_is_any(new_peer)) {
 					ipstr_buf b;
 
 					log_state(RC_LOG_SERIOUS, st,
@@ -1010,11 +1010,11 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 
 				/* Saving connection name and whack sock id */
 				const char *tmp_name = st->st_connection->name;
-				struct fd *tmp_whack_sock = dup_any(st->st_logger->object_whackfd);
+				struct fd *tmp_whack_sock = fd_dup(st->st_logger->object_whackfd, HERE);
 
 				/* deleting ISAKMP SA with the current remote peer */
 				delete_state(st);
-				md->st = st = NULL;
+				md->v1_st = st = NULL;
 
 				/* to find and store the connection associated with tmp_name */
 				/* ??? how do we know that tmp_name hasn't been freed? */
@@ -1084,7 +1084,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 				tmp_c->spd.that.id.ip_addr = new_peer;
 
 				/* update things that were the old peer */
-				if (address_eq(&tmp_c->spd.this.host_nexthop, &old_addr)) {
+				if (address_eq_address(tmp_c->spd.this.host_nexthop, old_addr)) {
 					address_buf ob, nb;
 					dbg("local next hop %s is the same as the old remote addr, changing local next hop to %s",
 					    str_address(&old_addr, &ob),
@@ -1092,7 +1092,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 					tmp_c->spd.this.host_nexthop = new_peer;
 				}
 
-				if (address_eq(&tmp_c->spd.that.host_srcip, &old_addr)) {
+				if (address_eq_address(tmp_c->spd.that.host_srcip, old_addr)) {
 					address_buf ob, nb;
 					dbg("remote host's srcip %s is the same as the old remote addr, changing remote host's srcip to %s",
 					    str_address(&old_addr, &ob),
@@ -1104,13 +1104,13 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 				 * XXX: should this also check that
 				 * the client is a single address?
 				 */
-				ip_address client_prefix = selector_prefix(&tmp_c->spd.that.client);
-				if (address_eq(&client_prefix, &old_addr)) {
+				ip_address client_prefix = selector_prefix(tmp_c->spd.that.client);
+				if (address_eq_address(client_prefix, old_addr)) {
 					address_buf ob, nb;
 					dbg("old remote client's ip %s is the same as the old remote address, changing remote client ip to %s",
 					    str_address(&old_addr, &ob),
 					    str_address(&new_peer, &nb));
-					tmp_c->spd.that.client = selector_from_address(&new_peer);
+					tmp_c->spd.that.client = selector_from_address(new_peer);
 				}
 
 				/*
@@ -1120,17 +1120,17 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 				tmp_c->host_pair->remote = new_peer;
 
 				/* Initiating connection to the redirected peer */
-				initiate_connections_by_name(tmp_name, NULL,
-							     tmp_whack_sock,
-							     tmp_whack_sock == NULL/*guess*/);
+				struct logger logger[] = { GLOBAL_LOGGER(tmp_whack_sock), }; /*placeholder*/
+				initiate_connections_by_name(tmp_name, /*remote-name*/NULL,
+							     /*background?*/tmp_whack_sock == NULL/*guess*/,
+							     logger);
 				close_any(&tmp_whack_sock);
 			}
 			return STF_IGNORE;
 		default:
 		{
-			struct logger *logger = (st != NULL ? st->st_logger :
-						 md != NULL ? md->md_logger :
-						 &failsafe_logger);
+			struct logger *logger = st != NULL ? st->st_logger :
+							     md->md_logger;
 			llog(RC_LOG_SERIOUS, logger,
 				    "received and ignored notification payload: %s",
 				    enum_name(&ikev1_notify_names, n->isan_type));
@@ -1140,7 +1140,7 @@ static stf_status informational(struct state *st, struct msg_digest *md)
 	} else {
 		/* warn if we didn't find any Delete or Notify payload in packet */
 		if (md->chain[ISAKMP_NEXT_D] == NULL) {
-			struct logger *logger = (st != NULL ? st->st_logger :
+			const struct logger *logger = (st != NULL ? st->st_logger :
 						 md != NULL ? md->md_logger :
 						 &failsafe_logger);
 			llog(RC_LOG_SERIOUS, logger,
@@ -1208,11 +1208,11 @@ static bool ikev1_duplicate(struct state *st, struct msg_digest *md)
 			(st->st_state->flags & SMF_RETRANSMIT_ON_DUPLICATE);
 		if (replied && retransmit_on_duplicate) {
 			/*
-			 * Transitions with EVENT_SO_DISCARD should
+			 * Transitions with EVENT_SA_DISCARD should
 			 * always respond to re-transmits (why?); else
 			 * cap.
 			 */
-			if (st->st_v1_last_transition->timeout_event == EVENT_SO_DISCARD ||
+			if (st->st_v1_last_transition->timeout_event == EVENT_SA_DISCARD ||
 			    count_duplicate(st, MAXIMUM_v1_ACCEPTED_DUPLICATES)) {
 				log_state(RC_RETRANSMISSION, st,
 					  "retransmitting in response to duplicate packet; already %s",
@@ -1566,7 +1566,7 @@ void process_v1_packet(struct msg_digest *md)
 				/* XXX Could send notification back */
 				return;
 			}
-			dbg(" call  init_phase2_iv");
+			dbg(" call init_phase2_iv");
 			init_phase2_iv(st, &md->hdr.isa_msgid);
 			new_iv_set = TRUE;
 
@@ -1627,7 +1627,7 @@ void process_v1_packet(struct msg_digest *md)
 				    st->st_connection ->spd.this.xauth_server ? " xauthserver" : "",
 				    st->st_connection->spd.this.xauth_client ? " xauthclient" : "",
 				    st->st_connection->spd.this.modecfg_server ? " modecfgserver" : "",
-				    st->st_connection->spd.this.modecfg_client  ? " modecfgclient" : "",
+				    st->st_connection->spd.this.modecfg_client ? " modecfgclient" : "",
 				    st->st_state->name);
 				return;
 			}
@@ -1691,7 +1691,7 @@ void process_v1_packet(struct msg_digest *md)
 		diag_t d = pbs_in_struct(&md->message_pbs, &isakmp_ikefrag_desc,
 					 &fraghdr, sizeof(fraghdr), &frag_pbs);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			SEND_NOTIFICATION(PAYLOAD_MALFORMED);
 			return;
 		}
@@ -1761,7 +1761,7 @@ void process_v1_packet(struct msg_digest *md)
 									       &frag->md->sender,
 									       HERE);
 					uint8_t *buffer = alloc_bytes(size,
-								       "IKE fragments buffer");
+								      "IKE fragments buffer");
 					size_t offset = 0;
 
 					/* Reassemble fragments in buffer */
@@ -1853,7 +1853,7 @@ void process_v1_packet(struct msg_digest *md)
 	/* save values for use in resumption of processing below.
 	 * (may be suspended due to crypto operation not yet complete)
 	 */
-	md->st = st;
+	md->v1_st = st;
 	md->smc = smc;
 	md->new_iv_set = new_iv_set;
 
@@ -1898,7 +1898,7 @@ void process_v1_packet(struct msg_digest *md)
  */
 void process_packet_tail(struct msg_digest *md)
 {
-	struct state *st = md->st;
+	struct state *st = md->v1_st;
 	const struct state_v1_microcode *smc = md->smc;
 	enum state_kind from_state = smc->state;
 	bool new_iv_set = md->new_iv_set;
@@ -2102,7 +2102,7 @@ void process_packet_tail(struct msg_digest *md)
 					diag_t d = pbs_in_struct(&md->message_pbs, &isakmp_ignore_desc,
 								 &pd->payload, sizeof(pd->payload), &pd->pbs);
 					if (d != NULL) {
-						log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+						llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 						LOG_PACKET(RC_LOG_SERIOUS,
 							   "%smalformed payload in packet",
 							   excuse);
@@ -2171,7 +2171,7 @@ void process_packet_tail(struct msg_digest *md)
 						 &pd->payload, sizeof(pd->payload),
 						 &pd->pbs);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				LOG_PACKET(RC_LOG_SERIOUS,
 					   "%smalformed payload in packet",
 					   excuse);
@@ -2391,10 +2391,10 @@ void process_packet_tail(struct msg_digest *md)
 				DBG_dump("del:", p->pbs.cur,
 					 pbs_left(&p->pbs));
 			}
-			if (md->st != st) {
-				pexpect(md->st == NULL);
+			if (md->v1_st != st) {
+				pexpect(md->v1_st == NULL);
 				dbg("zapping ST as accept_delete() zapped MD.ST");
-				st = md->st;
+				st = md->v1_st;
 			}
 			p = p->next;
 		}
@@ -2410,18 +2410,18 @@ void process_packet_tail(struct msg_digest *md)
 
 	if (self_delete) {
 		accept_self_delete(md);
-		st = md->st;
+		st = md->v1_st;
 		/* note: st ought to be NULL from here on */
 	}
 
-	pexpect(st == md->st);
-	statetime_t start = statetime_start(md->st);
+	pexpect(st == md->v1_st);
+	statetime_t start = statetime_start(md->v1_st);
 	/*
 	 * XXX: danger - the .informational() processor deletes ST;
 	 * and then tunnels this loss through MD.ST.
 	 */
 	stf_status e =smc->processor(st, md);
-	complete_v1_state_transition(md->st, md, e);
+	complete_v1_state_transition(md->v1_st, md, e);
 	statetime_stop(&start, "%s()", __func__);
 	/* our caller will release_any_md(mdp); */
 }
@@ -2477,8 +2477,6 @@ static void remember_received_packet(struct state *st, struct msg_digest *md)
  */
 void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_status result)
 {
-	passert(md != NULL);
-
 	/* handle oddball/meta results now */
 
 	/*
@@ -2503,24 +2501,27 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 		 * XXX: some initiator code creates a fake MD (there
 		 * isn't a real one); save that as well.
 		 */
-		suspend_any_md(md->st, md);
+		passert(md != NULL);
+		suspend_any_md(md->v1_st, md);
 		return;
 	case STF_IGNORE:
+		/* note: md might be NULL */
 		return;
 	default:
+		passert(md != NULL);
 		break;
 	}
 
 	/* safe to refer to *md */
 
 	enum state_kind from_state = md->smc->state;
-	st = md->st;
+	st = md->v1_st;
 
 	passert(st != NULL);
 	pexpect(!state_is_busy(st));
 
 	if (result > STF_OK) {
-		linux_audit_conn(md->st, IS_IKE_SA_ESTABLISHED(md->st) ? LAK_CHILD_FAIL : LAK_PARENT_FAIL);
+		linux_audit_conn(md->v1_st, IS_IKE_SA_ESTABLISHED(md->v1_st) ? LAK_CHILD_FAIL : LAK_PARENT_FAIL);
 	}
 
 	switch (result) {
@@ -2757,7 +2758,7 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 				if (agreed_time &&
 				    (c->policy & POLICY_DONT_REKEY)) {
 					kind = (smc->flags & SMF_INITIATOR) ?
-					       EVENT_v1_SA_REPLACE_IF_USED :
+					       EVENT_v1_REPLACE_IF_USED :
 					       EVENT_SA_EXPIRE;
 				}
 				if (kind != EVENT_SA_EXPIRE) {
@@ -2785,8 +2786,8 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 				event_schedule(kind, deltatime_ms(delay_ms), st);
 				break;
 
-			case EVENT_SO_DISCARD:
-				event_schedule(EVENT_SO_DISCARD, c->r_timeout, st);
+			case EVENT_SA_DISCARD:
+				event_schedule(EVENT_SA_DISCARD, c->r_timeout, st);
 				break;
 
 			default:
@@ -2910,7 +2911,7 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 			log_state(RC_LOG, st, "Nortel 'Contivity Mode' detected, starting Quick Mode");
 			change_state(st, STATE_MAIN_R3); /* ISAKMP is up... */
 			quick_outI1(st->st_logger->object_whackfd, st, st->st_connection,
-				    st->st_connection->policy, 1, SOS_NOBODY, empty_chunk);
+				    st->st_connection->policy, 1, SOS_NOBODY, null_shunk);
 			break;
 		}
 
@@ -2980,7 +2981,7 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 #endif
 		release_pending_whacks(st, "fatal error");
 		delete_state(st);
-		md->st = st = NULL;
+		md->v1_st = st = NULL;
 		break;
 
 	default:        /* a shortcut to STF_FAIL, setting md->note */
@@ -3035,7 +3036,7 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 		if (IS_QUICK(st->st_state->kind)) {
 			delete_state(st);
 			/* wipe out dangling pointer to st */
-			md->st = NULL;
+			md->v1_st = NULL;
 		}
 		break;
 	}
@@ -3043,12 +3044,12 @@ void complete_v1_state_transition(struct state *st, struct msg_digest *md, stf_s
 }
 
 /*
- * note: may change which connection is referenced by md->st->st_connection.
+ * note: may change which connection is referenced by md->v1_st->st_connection.
  * But only if we are a Main Mode Responder.
  */
 bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 {
-	struct state *const st = md->st;
+	struct state *const st = md->v1_st;
 	struct connection *c = st->st_connection;
 	const struct payload_digest *const id_pld = md->chain[ISAKMP_NEXT_ID];
 	const struct isakmp_id *const id = &id_pld->payload.id;
@@ -3090,7 +3091,7 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 
 	diag_t d = unpack_peer_id(id->isaid_idtype, &peer, &id_pld->pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return false;
 	}
 
@@ -3110,7 +3111,7 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 		id_buf buf;
 		esb_buf b;
 		log_state(RC_LOG, st, "Peer ID is %s: '%s'",
-			  enum_show(&ike_idtype_names, id->isaid_idtype, &b),
+			  enum_show(&ike_id_type_names, id->isaid_idtype, &b),
 			  str_id(&peer, &buf));
 	}
 
@@ -3136,7 +3137,7 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 	 */
 
 	if (initiator) {
-		if (!st->st_peer_alt_id &&
+		if (!st->st_v1_peer_alt_id &&
 		    !same_id(&c->spd.that.id, &peer) &&
 		    c->spd.that.id.kind != ID_FROMCERT) {
 			id_buf expect;
@@ -3193,10 +3194,10 @@ bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator, bool aggrmode)
 			dbg("no more suitable connection for peer '%s'",
 			    str_id(&peer, &buf));
 			/* can we continue with what we had? */
-			if (!md->st->st_peer_alt_id &&
+			if (!md->v1_st->st_v1_peer_alt_id &&
 			    !same_id(&c->spd.that.id, &peer) &&
 			    c->spd.that.id.kind != ID_FROMCERT) {
-				log_state(RC_LOG, md->st, "Peer mismatch on first found connection and no better connection found");
+				log_state(RC_LOG, md->v1_st, "Peer mismatch on first found connection and no better connection found");
 				return FALSE;
 			} else {
 				dbg("Peer ID matches and no better connection found - continuing with existing connection");
@@ -3248,7 +3249,7 @@ bool ikev1_ship_chain(chunk_t *chain, int n, pb_stream *outs,
 		      uint8_t type)
 {
 	for (int i = 0; i < n; i++) {
-		if (!ikev1_ship_CERT(type, chain[i], outs))
+		if (!ikev1_ship_CERT(type, HUNK_AS_SHUNK(chain[i]), outs))
 			return false;
 	}
 
@@ -3256,11 +3257,11 @@ bool ikev1_ship_chain(chunk_t *chain, int n, pb_stream *outs,
 }
 
 void doi_log_cert_thinking(uint16_t auth,
-				enum ike_cert_type certtype,
-				enum certpolicy policy,
-				bool gotcertrequest,
-				bool send_cert,
-				bool send_chain)
+			   enum ike_cert_type certtype,
+			   enum certpolicy policy,
+			   bool gotcertrequest,
+			   bool send_cert,
+			   bool send_chain)
 {
 	if (DBGP(DBG_BASE)) {
 		DBG_log("thinking about whether to send my certificate:");
@@ -3293,6 +3294,126 @@ void doi_log_cert_thinking(uint16_t auth,
 			DBG_log("Sending one or more authcerts");
 	}
 }
+
+/*
+ * an ISAKMP SA has been established.
+ * Note the serial number, and release any connections with
+ * the same peer ID but different peer IP address.
+ *
+ * Called by IKEv1 and IKEv2 when the IKE SA is established.
+ * It checks if the freshly established connection needs is
+ * replacing an established version of itself.
+ *
+ * The use of uniqueIDs is mostly historic and might be removed
+ * in a future version. It is ignored for PSK based connections,
+ * which only act based on being a "server using PSK".
+ *
+ * IKEv1 code does not send or process INITIAL_CONTACT
+ * IKEv2 codes does so we take it into account.
+ */
+
+void ISAKMP_SA_established(const struct ike_sa *ike)
+{
+	struct connection *c = ike->sa.st_connection;
+	bool authnull = (LIN(POLICY_AUTH_NULL, c->policy) || c->spd.that.authby == AUTHBY_NULL);
+
+	if (c->spd.this.xauth_server && LIN(POLICY_PSK, c->policy)) {
+		/*
+		 * If we are a server and use PSK, all clients use the same group ID
+		 * Note that "xauth_server" also refers to IKEv2 CP
+		 */
+		dbg("We are a server using PSK and clients are using a group ID");
+	} else if (!uniqueIDs) {
+		dbg("uniqueIDs disabled, not contemplating releasing older self");
+	} else {
+		/*
+		 * for all existing connections: if the same Phase 1 IDs are used,
+		 * unorient the (old) connection (if different from current connection)
+		 * Only do this for connections with the same name (can be shared ike sa)
+		 */
+		dbg("FOR_EACH_CONNECTION_... in %s", __func__);
+		for (struct connection *d = connections; d != NULL; ) {
+			/* might move underneath us */
+			struct connection *next = d->ac_next;
+
+			/* if old IKE SA is same as new IKE sa and non-auth isn't overwrting auth */
+			if (c != d && c->kind == d->kind && streq(c->name, d->name) &&
+			    same_id(&c->spd.this.id, &d->spd.this.id) &&
+			    same_id(&c->spd.that.id, &d->spd.that.id))
+			{
+				bool old_is_nullauth = (LIN(POLICY_AUTH_NULL, d->policy) || d->spd.that.authby == AUTHBY_NULL);
+				bool same_remote_ip = sameaddr(&c->spd.that.host_addr, &d->spd.that.host_addr);
+
+				if (same_remote_ip && (!old_is_nullauth && authnull)) {
+					log_state(RC_LOG, &ike->sa, "cannot replace old authenticated connection with authnull connection");
+				} else if (!same_remote_ip && old_is_nullauth && authnull) {
+					log_state(RC_LOG, &ike->sa, "NULL auth ID for different IP's cannot replace each other");
+				} else {
+					dbg("unorienting old connection with same IDs");
+					/*
+					 * When replacing an old
+					 * existing connection,
+					 * suppress sending delete
+					 * notify
+					 */
+					suppress_delete_notify(ike, "ISAKMP", d->newest_ike_sa);
+					suppress_delete_notify(ike, "IKE", d->newest_ipsec_sa);
+					/*
+					 * XXX: Assume this call
+					 * doesn't want to log to
+					 * whack?  Even though the IKE
+					 * SA may have whack attached,
+					 * don't transfer it to the
+					 * old connection.
+					 */
+					if (d->kind == CK_INSTANCE) {
+						delete_connection(&d, /*relations?*/false);
+					} else {
+						release_connection(d, /*relations?*/false); /* this deletes the states */
+					}
+				}
+			}
+			d = next;
+		}
+
+		/*
+		 * This only affects IKEv2, since we don't store any
+		 * received INITIAL_CONTACT for IKEv1.
+		 * We don't do this on IKEv1, because it seems to
+		 * confuse various third parties (Windows, Cisco VPN 300,
+		 * and juniper
+		 * likely because this would be called before the IPsec SA
+		 * of QuickMode is installed, so the remote endpoints view
+		 * this IKE SA still as the active one?
+		 */
+		if (ike->sa.st_ike_seen_v2n_initial_contact) {
+			if (c->newest_ike_sa != SOS_NOBODY &&
+			    c->newest_ike_sa != ike->sa.st_serialno) {
+				struct state *old_p1 = state_by_serialno(c->newest_ike_sa);
+
+				dbg("deleting replaced IKE state for %s",
+				    old_p1->st_connection->name);
+				old_p1->st_dont_send_delete = true;
+				event_force(EVENT_SA_EXPIRE, old_p1);
+			}
+
+			if (c->newest_ipsec_sa != SOS_NOBODY) {
+				struct state *old_p2 = state_by_serialno(c->newest_ipsec_sa);
+				struct connection *d = old_p2 == NULL ? NULL : old_p2->st_connection;
+
+				if (c == d && same_id(&c->spd.that.id, &d->spd.that.id)) {
+					dbg("Initial Contact received, deleting old state #%lu from connection '%s'",
+					    c->newest_ipsec_sa, c->name);
+					old_p2->st_dont_send_delete = true;
+					event_force(EVENT_SA_EXPIRE, old_p2);
+				}
+			}
+		}
+	}
+
+	c->newest_ike_sa = ike->sa.st_serialno;
+}
+
 /*
  * Reply messages are built in this nasty evil global buffer.
  *

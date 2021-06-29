@@ -25,12 +25,12 @@
 #define FD_H
 
 #include <stdbool.h>
-#include <stdlib.h>		/* for ssize_t */
-
-#include "where.h"
+#include <stddef.h>		/* for size_t */
+#include <sys/types.h>		/* for ssize_t */
 
 struct msghdr;
 struct logger;
+struct where;
 
 /* opaque and reference counted */
 struct fd;
@@ -40,15 +40,14 @@ struct fd;
  */
 #define null_fd ((struct fd *) NULL)
 
-struct fd *fd_accept(int socket, where_t where, struct logger *logger);
+struct fd *fd_accept(int socket, const struct where *where, struct logger *logger);
 
-#define dup_any(FD) dup_any_fd((FD), HERE)
-struct fd *dup_any_fd(struct fd *fd, where_t where);
+struct fd *fd_dup(struct fd *fd, const struct where *where);
 
 #define close_any(FD) close_any_fd((FD), HERE)
-void close_any_fd(struct fd **fd, where_t where);
+void close_any_fd(struct fd **fd, const struct where *where);
 
-void fd_leak(struct fd *fd, where_t where);
+void fd_leak(struct fd *fd, const struct where *where);
 
 /* return nr-bytes, or -ERRNO */
 ssize_t fd_sendmsg(const struct fd *fd, const struct msghdr *msg, int flags);
@@ -70,7 +69,7 @@ bool same_fd(const struct fd *l, const struct fd *r);
  * PRI_... names are consistent with shunk_t and hopefully avoid
  * clashes with reserved PRI* names.
  */
-#define PRI_FD "fd-fd@%p"
+#define PRI_FD "fd@%p"
 #define pri_fd(FD) (FD)
 
 #endif

@@ -3,7 +3,7 @@ east #
  ipsec start
 Redirecting to: [initsystem]
 east #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 east #
  ipsec auto --add road-east-ikev2
 002 "road-east-ikev2": added IKEv2 connection
@@ -38,19 +38,22 @@ east #
  echo "initdone"
 initdone
 east #
- # both ends should have two public keys.The second from reverse dns
+ # both ends should have three public keys.  The first two from reverse
+east #
+ # DNS.
 east #
  ipsec auto --listpubkeys
 000  
 000 List of Public Keys:
 000  
+000 TIMESTAMP, 3104 RSA Key AQPHFfpyJ (no private key), until TIMESTAMP warning (expires in X days)
+000        ID_FQDN '@road.testing.libreswan.org'
+000 TIMESTAMP, 3184 RSA Key AwXXXXXXX (no private key), until TIMESTAMP warning (expires in X days)
+000        ID_FQDN '@road.testing.libreswan.org'
 000 TIMESTAMP, 2192 RSA Key AQO9bJbr3 (has private key), until --- -- --:--:-- ---- ok (expires never)
 000        ID_IPV4_ADDR '192.1.2.23'
 east #
  ipsec whack --trafficstatus
-east #
- ../bin/check-for-core.sh
-east #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
+006 #2: "road-east-ikev2", type=ESP, add_time=1234567890, inBytes=336, outBytes=336, id='@road.testing.libreswan.org'
 east #
  

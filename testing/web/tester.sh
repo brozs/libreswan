@@ -1,11 +1,13 @@
 #!/bin/sh
 
+set -u
+
 if test $# -lt 2 -o $# -gt 3; then
     cat >> /dev/stderr <<EOF
 
 Usage:
 
-    $0 <repodir> <summarydir> [ <hash> ]
+    $0 <repodir> <summarydir> [ <earliest_commit> ]
 
 Track <repodir>'s current branch and test each "interesting" commit.
 Publish results under <summarydir>.
@@ -22,8 +24,8 @@ set -euvx
 repodir=$(cd $1 && pwd ) ; shift
 summarydir=$(cd $1 && pwd) ; shift
 
-webdir=$(dirname $0)
-makedir=$(cd ${webdir}/../.. && pwd)
+bindir=$(dirname $0)
+makedir=$(cd ${bindir}/../.. && pwd)
 utilsdir=${makedir}/testing/utils
 
 # start with new shiny domains
@@ -32,26 +34,25 @@ kvm_setup=kvm-purge
 
 # Select the oldest commit to test.
 #
-# Will search [HEAD..oldest_commit] for something interesting and
+# Will search [earliest_commit..HEAD] for something interesting and
 # untested.
 #
 # When recovering from an error (and when just starting) set
-# oldest_commit to HEAD so that only a new commit, which hopefully
-# fixes, the barf will be tested (if there's no new commit things go
+# earliest_commit to HEAD so that only a new commit, which hopefully
+# fixes the barf will be tested (if there's no new commit things go
 # idle).
-
-oldest_commit=$(cd ${repodir} && git show --no-patch --format=%H HEAD)
-
+#
 # If a commit was specified explicitly, start with that.
 
 if test $# -gt 0 ; then
-    # could be a tag; convert after updating repo
-    first_test_commit=$1; shift
+    # Could be a tag; gime-work.sh deals with that after the repo is
+    # updated.
+    earliest_commit=$1; shift
 else
-    first_test_commit=
+    earliest_commit=$(${bindir}/gime-git-hash.sh ${repodir} HEAD)
 fi
 
-json_status="${webdir}/json-status.sh --json ${summarydir}/status.json"
+json_status="${bindir}/json-status.sh --json ${summarydir}/status.json"
 status=${json_status}
 
 
@@ -61,7 +62,7 @@ run() (
 
     # fudge up enough of summary.json to fool the top level
     if test ! -r ${resultsdir}/kvm-test.ok ; then
-	${webdir}/json-summary.sh "${start_time}" > ${resultsdir}/summary.json
+	${bindir}/json-summary.sh "${start_time}" > ${resultsdir}/summary.json
     fi
 
     # So new features can be tested (?) use kvmrunner.py from this
@@ -120,17 +121,11 @@ while true ; do
 
     # Select the next commit to test
     #
-    # Search [HEAD..oldest_commit] for something interesting and
+    # Search [earliest_commit..HEAD] for something interesting and
     # untested.
 
     ${status} "looking for work"
-    if test "${first_test_commit}" != "" ; then
-	# Use ^{} + rev-parse to convert the potentially signed tag
-	# into the hash that the tag is refering to.  Without ^{}
-	# rev-parse returns the hash of the tag.
-	commit=$(cd ${repodir} && git rev-parse ${first_test_commit}^{})
-	first_test_commit=
-    elif ! commit=$(${webdir}/gime-work.sh ${summarydir} ${repodir} ${oldest_commit}) ; then \
+    if ! commit=$(${bindir}/gime-work.sh ${summarydir} ${repodir} ${earliest_commit}) ; then \
 	# Seemlingly nothing to do; github gets updated up every 15
 	# minutes so sleep for less than that
 	seconds=$(expr 10 \* 60)
@@ -154,13 +149,13 @@ while true ; do
     # Mimic how web-targets.mki computes RESULTSDIR; switch to
     # directory specific status.
 
-    resultsdir=${summarydir}/$(${webdir}/gime-git-description.sh ${repodir})
+    resultsdir=${summarydir}/$(${bindir}/gime-git-description.sh ${repodir})
     gitstamp=$(basename ${resultsdir})
     status="${json_status} --directory ${gitstamp}"
 
     # create the resultsdir and point the summary at it.
 
-    start_time=$(${webdir}/now.sh)
+    start_time=$(${bindir}/now.sh)
     ${status} "creating results directory"
     make -C ${makedir} web-resultsdir \
 	 WEB_TIME=${start_time} \
@@ -184,7 +179,7 @@ while true ; do
     for target in ${targets}; do
 	# generate json of the progress
 	touch ${resultsdir}/${target}.log
-	${webdir}/json-make.sh --json ${resultsdir}/make.json --resultsdir ${resultsdir} ${targets}
+	${bindir}/json-make.sh --json ${resultsdir}/make.json --resultsdir ${resultsdir} ${targets}
 	# run the target on hand
 	if ! run ${target} ; then
 	    # force the next run to test HEAD++ using rebuilt and

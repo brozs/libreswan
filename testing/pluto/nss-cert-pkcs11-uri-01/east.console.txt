@@ -69,7 +69,7 @@ east #
  ipsec start
 Redirecting to: [initsystem]
 east #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 east #
  ipsec auto --add westnet-eastnet-ikev2
 002 "westnet-eastnet-ikev2": NSS Password from file "/etc/ipsec.d/nsspassword" for token "libreswan" with length 6 passed to NSS
@@ -112,12 +112,9 @@ east #
 000   2048 bit RSA
 000  
 000 List of CRLs:
+000  
 east #
  echo "initdone"
 initdone
-east #
- ../bin/check-for-core.sh
-east #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 east #
  

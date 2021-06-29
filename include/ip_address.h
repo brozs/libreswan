@@ -24,6 +24,7 @@
 #include "chunk.h"
 #include "err.h"
 #include "where.h"
+#include "ip_bytes.h"
 
 struct jambuf;
 struct ip_info;
@@ -43,31 +44,35 @@ extern bool log_ip; /* false -> redact (aka sanitize) ip addresses */
  */
 
 typedef struct {
-	bool is_address;
+	bool is_set;
 	/*
 	 * Index into the struct ip_info array; must be stream
 	 * friendly.
 	 */
-	unsigned version; /* 0, 4, 6 */
+	enum ip_version version; /* 0, 4, 6 */
 	/*
 	 * We need something that makes static IPv4 initializers possible
 	 * (struct in_addr requires htonl() which is run-time only).
 	 */
-	struct ip_bytes { uint8_t byte[16]; } bytes;
+	struct ip_bytes bytes;
 } ip_address;
 
-#define PRI_ADDRESS "%s (version=%d is_address=%s)"
+#define PRI_ADDRESS "%s is_set=%s version=%d bytes="PRI_BYTES
 #define pri_address(A, B)						\
-		str_address(A, B),					\
+	str_address(A, B),						\
+		bool_str((A)->is_set),					\
 		(A)->version,						\
-		bool_str((A)->is_address)
+		pri_bytes((A)->bytes)
 
-void pexpect_address(const ip_address *a, const char *t, where_t where);
-#define paddress(A) pexpect_address(A, #A, HERE)
+void pexpect_address(const ip_address *a, where_t where);
+#define paddress(A) pexpect_address(A, HERE)
 
 /*
  * Constructors.
  */
+
+ip_address address_from_raw(where_t where, enum ip_version version,
+			    const struct ip_bytes bytes);
 
 ip_address address_from_in_addr(const struct in_addr *in);
 ip_address address_from_in6_addr(const struct in6_addr *sin6);
@@ -77,9 +82,9 @@ err_t data_to_address(const void *data, size_t sizeof_data,
 #define hunk_to_address(HUNK, AF, DST) data_to_address(HUNK.ptr, HUNK.len, AF, DST)
 
 /* assumes dotted / colon notation */
-err_t numeric_to_address(shunk_t src, const struct ip_info *type, ip_address *dst);
+err_t ttoaddress_num(shunk_t src, const struct ip_info *type, ip_address *dst);
 /* if numeric lookup fails, try a DNS lookup */
-err_t domain_to_address(shunk_t src, const struct ip_info *type, ip_address *dst);
+err_t ttoaddress_dns(shunk_t src, const struct ip_info *type, ip_address *dst);
 
 /*
  * Convert an address to a string:
@@ -133,20 +138,17 @@ const char *ipstr(const ip_address *src, ipstr_buf *b);
  */
 
 extern const ip_address unset_address;
-bool address_is_unset(const ip_address *address);
 
-const struct ip_info *address_type(const ip_address *address);
+bool address_is_unset(const ip_address *address);		/* handles NULL */
+const struct ip_info *address_type(const ip_address *address);	/* handles NULL */
 
 /* !unset && !any */
-bool address_is_specified(const ip_address *address);
-bool address_is_loopback(const ip_address *address);
-bool address_is_any(const ip_address *address);
+bool address_is_specified(const ip_address address);
+bool address_is_loopback(const ip_address address);
+bool address_is_any(const ip_address address);
 
 /* are two is_set() addresses identical? */
-bool address_eq(const ip_address *address, const ip_address *another);
-
-/* AF={INET,INET6}, ADDR = 0; aka %any? */
-ip_address address_any(const struct ip_info *info);
+bool address_eq_address(const ip_address address, const ip_address another);
 
 /*
  * Raw address bytes, both read-only and read-write.
@@ -160,36 +162,11 @@ chunk_t address_as_chunk(ip_address *address);
 uint32_t ntohl_address(const ip_address *address);
 
 /*
- * Modify an address routing-prefix:host-id.
- */
-
-extern const struct ip_blit set_bits;
-extern const struct ip_blit clear_bits;
-extern const struct ip_blit keep_bits;
-
-ip_address address_from_blit(const struct ip_info *afi,
-			     struct ip_bytes bytes,
-			     const struct ip_blit *routing_prefix,
-			     const struct ip_blit *host_id,
-			     unsigned nr_prefix_bits);
-
-/* address_from_blit(AFI, BYTES, clear_bits, keep_bits, 0); */
-ip_address address_from_raw(const struct ip_info *afi,
-			    const struct ip_bytes *bytes);
-
-/*
  * Old style.
  */
 
-/* looks up names in DNS */
-extern err_t ttoaddr(const char *src, size_t srclen, int af, ip_address *dst);
-
-/* does not look up names in DNS */
-extern err_t ttoaddr_num(const char *src, size_t srclen, int af, ip_address *dst);
-
 /* RFC 1886 old IPv6 reverse-lookup format is the bulkiest */
 #define ADDRTOT_BUF     sizeof(address_reversed_buf)
-extern err_t tnatoaddr(const char *src, size_t srclen, int af, ip_address *dst);
 
 /* misc. conversions and related */
 extern int addrtypeof(const ip_address *src);

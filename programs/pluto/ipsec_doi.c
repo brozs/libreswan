@@ -81,81 +81,39 @@
 #include "pending.h"
 #include "iface.h"
 #include "ikev2_delete.h"	/* for record_v2_delete(); but call is dying */
+#include "orient.h"
+#include "initiate.h"
+#include "ikev2_ike_sa_init.h"
 
-void ipsecdoi_initiate(struct fd *whack_sock,
-		       struct connection *c,
-		       lset_t policy,
-		       unsigned long try,
-		       so_serial_t replacing,
-		       const threadtime_t *inception,
-		       chunk_t sec_label)
+/*
+ * Start from policy in (ipsec) state, not connection.  This ensures
+ * that rekeying doesn't downgrade security.  I admit that this
+ * doesn't capture everything.
+ */
+lset_t capture_child_rekey_policy(struct state *st)
 {
-	dbg("ipsecdoi_initiate() called with sec_label %.*s", (int)sec_label.len, sec_label.ptr);
-	/*
-	 * If there's already an IKEv1 ISAKMP SA established, use that and
-	 * go directly to Quick Mode.  We are even willing to use one
-	 * that is still being negotiated, but only if we are the Initiator
-	 * (thus we can be sure that the IDs are not going to change;
-	 * other issues around intent might matter).
-	 * Note: there is no way to initiate with a Road Warrior.
-	 */
-	struct state *st = find_phase1_state(c,
-#ifdef USE_IKEv1
-					     ISAKMP_SA_ESTABLISHED_STATES |
-					     PHASE1_INITIATOR_STATES |
-#endif
-					     IKEV2_ISAKMP_INITIATOR_STATES);
+	lset_t policy = st->st_policy;
 
-	switch (c->ike_version) {
-#ifdef USE_IKEv1
-	case IKEv1:
-		if (st == NULL) {
-			initiator_function *initiator = (policy & POLICY_AGGRESSIVE) ? aggr_outI1 : main_outI1;
-			initiator(whack_sock, c, NULL, policy, try, inception, sec_label);
-		} else if (!IS_ISAKMP_SA_ESTABLISHED(st->st_state)) {
-			/* leave our Phase 2 negotiation pending */
-			add_pending(whack_sock, pexpect_ike_sa(st),
-				    c, policy, try,
-				    replacing, sec_label,
-				    false /*part of initiate*/);
-		} else {
-			/*
-			 * ??? we assume that peer_nexthop_sin isn't
-			 * important: we already have it from when we
-			 * negotiated the ISAKMP SA!  It isn't clear
-			 * what to do with the error return.
-			 */
-			quick_outI1(whack_sock, st, c, policy, try,
-				    replacing, sec_label);
-		}
-		break;
-#endif
-	case IKEv2:
-		if (st == NULL) {
-			/* note: new IKE SA pulls sec_label from connection */
-			ikev2_out_IKE_SA_INIT_I(whack_sock, c, NULL, policy, try, inception, empty_chunk);
-		} else if (!IS_PARENT_SA_ESTABLISHED(st)) {
-			/* leave CHILD SA negotiation pending */
-			add_pending(whack_sock, pexpect_ike_sa(st),
-				    c, policy, try,
-				    replacing, sec_label,
-				    false /*part of initiate*/);
-		} else {
-			struct pending p = {
-				.whack_sock = whack_sock, /*on-stack*/
-				.ike = pexpect_ike_sa(st),
-				.connection = c,
-				.try = try,
-				.policy = policy,
-				.replacing = replacing,
-				.sec_label = sec_label,
-			};
-			ikev2_initiate_child_sa(&p);
-		}
-		break;
-	default:
-		bad_case(c->ike_version);
+	if (st->st_pfs_group != NULL)
+		policy |= POLICY_PFS;
+	if (st->st_ah.present) {
+		policy |= POLICY_AUTHENTICATE;
+		if (st->st_ah.attrs.mode == ENCAPSULATION_MODE_TUNNEL)
+			policy |= POLICY_TUNNEL;
 	}
+	if (st->st_esp.present &&
+	    st->st_esp.attrs.transattrs.ta_encrypt != &ike_alg_encrypt_null) {
+		policy |= POLICY_ENCRYPT;
+		if (st->st_esp.attrs.mode == ENCAPSULATION_MODE_TUNNEL)
+			policy |= POLICY_TUNNEL;
+	}
+	if (st->st_ipcomp.present) {
+		policy |= POLICY_COMPRESS;
+		if (st->st_ipcomp.attrs.mode == ENCAPSULATION_MODE_TUNNEL)
+			policy |= POLICY_TUNNEL;
+	}
+
+	return policy;
 }
 
 /* Replace SA with a fresh one that is similar
@@ -187,58 +145,41 @@ void ipsecdoi_replace(struct state *st, unsigned long try)
 
 		switch(st->st_ike_version) {
 		case IKEv2:
-		{
-			initiator_function *initiator = ikev2_out_IKE_SA_INIT_I;
-			initiator(st->st_logger->object_whackfd, c, st, policy, try, &inception, c->spd.this.sec_label);
+			ikev2_out_IKE_SA_INIT_I(c, st, policy, try, &inception,
+						HUNK_AS_SHUNK(c->spd.this.sec_label),
+						/*background?*/false, st->st_logger);
 			break;
-		}
 #ifdef USE_IKEv1
 		case IKEv1:
-		{
-			initiator_function *initiator = (policy & POLICY_AGGRESSIVE) ? aggr_outI1 : main_outI1;
-			initiator(st->st_logger->object_whackfd, c, st, policy, try, &inception, c->spd.this.sec_label);
+			if (policy & POLICY_AGGRESSIVE) {
+				aggr_outI1(st->st_logger->object_whackfd, c, st,
+					   policy, try, &inception,
+					   HUNK_AS_SHUNK(c->spd.this.sec_label));
+			} else {
+				main_outI1(st->st_logger->object_whackfd, c, st,
+					   policy, try, &inception,
+					   HUNK_AS_SHUNK(c->spd.this.sec_label));
+			}
 			break;
-		}
 #endif
 		default:
 			dbg("unsupported IKE version '%d', cannot initiate", st->st_ike_version);
 		}
 	} else {
+
 		/*
 		 * Start from policy in (ipsec) state, not connection.
 		 * This ensures that rekeying doesn't downgrade
 		 * security.  I admit that this doesn't capture
 		 * everything.
 		 */
-		lset_t policy = st->st_policy;
-
-		if (st->st_pfs_group != NULL)
-			policy |= POLICY_PFS;
-		if (st->st_ah.present) {
-			policy |= POLICY_AUTHENTICATE;
-			if (st->st_ah.attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
-				policy |= POLICY_TUNNEL;
-		}
-		if (st->st_esp.present &&
-		    st->st_esp.attrs.transattrs.ta_encrypt != &ike_alg_encrypt_null) {
-			policy |= POLICY_ENCRYPT;
-			if (st->st_esp.attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
-				policy |= POLICY_TUNNEL;
-		}
-		if (st->st_ipcomp.present) {
-			policy |= POLICY_COMPRESS;
-			if (st->st_ipcomp.attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
-				policy |= POLICY_TUNNEL;
-		}
+		lset_t policy = capture_child_rekey_policy(st);
 
 		if (st->st_ike_version == IKEv1)
 			passert(HAS_IPSEC_POLICY(policy));
 
-		ipsecdoi_initiate(st->st_logger->object_whackfd, st->st_connection,
-				  policy, try, st->st_serialno, &inception, empty_chunk);
+		ipsecdoi_initiate(st->st_connection, policy, try, st->st_serialno, &inception,
+				  null_shunk, /*background?*/false, st->st_logger);
 	}
 }
 
@@ -282,12 +223,12 @@ void initialize_new_state(struct state *st,
 	struct connection *c = st->st_connection;
 	pexpect(oriented(*c));
 	c->interface = NULL;
-	(void)orient(c);
+	orient(c, st->st_logger);
 	st->st_interface = c->interface;
 	passert(st->st_interface != NULL);
-	st->st_remote_endpoint = endpoint3(c->interface->protocol,
-					   &c->spd.that.host_addr,
-					   ip_hport(c->spd.that.host_port));
+	st->st_remote_endpoint = endpoint_from_address_protocol_port(c->spd.that.host_addr,
+								     c->interface->protocol,
+								     ip_hport(c->spd.that.host_port));
 	endpoint_buf eb;
 	dbg("in %s with remote endpoint set to %s",
 	    __func__, str_endpoint(&st->st_remote_endpoint, &eb));
@@ -344,7 +285,7 @@ void lswlog_child_sa_established(struct jambuf *buf, struct state *st)
 		}
 		jam(buf, "-%s", st->st_esp.attrs.transattrs.ta_integ->common.fqn);
 
-		if ((st->st_ike_version == IKEv2) && st->st_pfs_group != NULL)  {
+		if ((st->st_ike_version == IKEv2) && st->st_pfs_group != NULL) {
 			jam_string(buf, "-");
 			jam_string(buf, st->st_pfs_group->common.fqn);
 		}
@@ -378,19 +319,19 @@ void lswlog_child_sa_established(struct jambuf *buf, struct state *st)
 	ipstr_buf ipb;
 	jam_string(buf,
 		   (address_is_unset(&st->hidden_variables.st_nat_oa) ||
-		    address_is_any(&st->hidden_variables.st_nat_oa)) ? "none" :
+		    address_is_any(st->hidden_variables.st_nat_oa)) ? "none" :
 		   ipstr(&st->hidden_variables.st_nat_oa, &ipb));
 
 	jam_string(buf, " NATD=");
 
 	if (address_is_unset(&st->hidden_variables.st_natd) ||
-	    address_is_any(&st->hidden_variables.st_natd)) {
+	    address_is_any(st->hidden_variables.st_natd)) {
 		jam_string(buf, "none");
 	} else {
 		/* XXX: can lswlog_ip() be used?  need to check st_remoteport */
 		jam(buf, "%s:%d",
 		    str_address_sensitive(&st->hidden_variables.st_natd, &ipb),
-		    endpoint_hport(&st->st_remote_endpoint));
+		    endpoint_hport(st->st_remote_endpoint));
 	}
 
 	jam(buf, (st->st_ike_version == IKEv1 && !st->hidden_variables.st_peer_supports_dpd) ? " DPD=unsupported" :

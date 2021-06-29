@@ -285,6 +285,7 @@ static void test_enum_lset(const char *name, const enum_names *en, lset_t val)
 
 int main(int argc UNUSED, char *argv[])
 {
+	leak_detective = true;
 	struct logger *logger = tool_init_log(argv[0]);
 
 	/* don't hold back */
@@ -322,7 +323,7 @@ int main(int argc UNUSED, char *argv[])
 	test_enums("ikev2_cp_type_names", &ikev2_cp_type_names);
 	test_enums("ikev2_cp_attribute_type_names", &ikev2_cp_attribute_type_names);
 	test_enums("pkk_names", &pkk_names);
-	test_enum_range("enc_mode_names", &enc_mode_names, 0, 256);
+	test_enum_range("enc_mode_names", &encapsulation_mode_names, 0, 256);
 	test_enums("auth_alg_names", &auth_alg_names);
 	test_enums("xauth_type_names", &xauth_type_names);
 	test_enum_range("xauth_attr_names", &xauth_attr_names, 0, 256);
@@ -340,10 +341,9 @@ int main(int argc UNUSED, char *argv[])
 	test_enums("ike_cert_type_names", &ike_cert_type_names);
 	test_enums("ikev2_cert_type_names", &ikev2_cert_type_names);
 	test_enum_range("modecfg_attr_names", &modecfg_attr_names, 0, 256);
-	test_enum_range("ike_idtype_names_extended", &ike_idtype_names_extended, -10, 0);
-	test_enum_range("ike_idtype_names_extended", &ike_idtype_names_extended0, 0, 256);
-	test_enums("ike_idtype_names", &ike_idtype_names);
-	test_enums("ikev2_idtype_names", &ikev2_idtype_names);
+	test_enum_range("ike_id_type_names", &ike_id_type_names, -10, 256);
+	test_enums("ikev2_ike_id_type_names", &ikev1_ike_id_type_names);
+	test_enums("ikev2_ike_id_type_names", &ikev2_ike_id_type_names);
 
 	/*
 	 * Some hard-wired checks of enum_enum_name.  If a lookup
@@ -364,6 +364,14 @@ int main(int argc UNUSED, char *argv[])
 	test_enum_lset("debug", &debug_names, DBG_CRYPT|DBG_CPU_USAGE);
 	printf("\n");
 
-	report_leaks(logger);
-	exit(errors > 0 ? 1 : 0);
+	if (report_leaks(logger)) {
+		errors++;
+	}
+
+	if (errors > 0) {
+		fprintf(stderr, "TOTAL FAILURES: %d\n", errors);
+		return 1;
+	}
+
+	return 0;
 }

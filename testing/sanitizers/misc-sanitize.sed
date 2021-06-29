@@ -13,8 +13,11 @@ s/^\[[0-9]\] [0-9]*$/[x] PID/
 s/SSH-2.0-OpenSSH_.*$/SSH-2.0-OpenSSH_XXX/
 /^ *Electric Fence.*$/d
 /^.*anti-replay context:.*$/d
+
 s/add bare shunt 0x[^ ]* /add bare shunt 0xPOINTER /
 s/delete bare shunt 0x[^ ]* /delete bare shunt 0xPOINTER /
+s/comparing bare shunt 0x[^ ]* /comparing bare shunt 0xPOINTER /
+
 s/ike-scan \(.*\) with/ike-scan XX with/
 s/Ending ike-scan \(.*\):/ Ending ike-scan XX:/
 s/conntrack v[0-9]*\.[0-9]*\.[0-9]* /conntrack vA.B.C /
@@ -37,9 +40,8 @@ s/last_contact=[0-9]*\.[0-9]*->[0-9]*\.[0-9]*/last_contact=XX.XXX->XX.XXX/g
 s/last_contact=[0-9]*\.[0-9]*/last_contact=XX.XXX/g
 
 # TCP sockets
-s/from socket [0-9]* /from socket XX /g
-s/IMPAIR: TCP: socket [0-9]* /IMPAIR: TCP: socket XX /g
-s/TCP: socket [0-9]* /TCP: socket XX /g
+s/ socket [0-9][0-9]*: / socket XX: /g
+
 /^nohup: ignoring input and redirecting stderr to stdout$/d
 s/encap type 7 sport/encap type espintcp sport/g
 s/unbound-control.[0-9]*:[0-9]*./unbound-control[XXXXXX:X] /g 
@@ -47,3 +49,5 @@ s/ping: connect: Network is unreachable/connect: Network is unreachable/g
 # softhsm - pkcs-uri ephemerals
 s/serial=[^;]*;token=libreswan/serial=XXXXXXXX;token=libreswan/g
 s/and is reassigned to slot .*$/and is reassigned to slot XXXXX/g
+
+s/tcpdump: listening on .*$/tcpdump: listening on INTERFACE DETAILS/

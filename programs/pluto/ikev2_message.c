@@ -209,7 +209,7 @@ struct pbs_out open_v2_message(struct pbs_out *message,
 	struct pbs_out body;
 	diag_t d = pbs_out_struct(message, &isakmp_hdr_desc, &hdr, sizeof(hdr), &body);
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, ike->sa.st_logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, ike->sa.st_logger, &d, "%s", "");
 		return empty_pbs;
 	}
 	if (impair.add_unknown_v2_payload_to == exchange_type &&
@@ -226,14 +226,14 @@ struct pbs_out open_v2_message(struct pbs_out *message,
  * octets.  The IV will subsequently be discarded after decryption.
  * This is true of Cipher Block Chaining mode (CBC).
  */
-static bool emit_v2SK_iv(v2SK_payload_t *sk)
+static bool emit_v2SK_iv(struct v2SK_payload *sk)
 {
 	/* compute location/size */
 	sk->iv = chunk2(sk->pbs.cur, sk->ike->sa.st_oakley.ta_encrypt->wire_iv_size);
 	/* make space */
 	diag_t d = pbs_out_zero(&sk->pbs, sk->iv.len, "IV");
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, sk->logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, sk->logger, &d, "%s", "");
 		return false;
 	}
 	/* scribble on it */
@@ -241,12 +241,12 @@ static bool emit_v2SK_iv(v2SK_payload_t *sk)
 	return true;
 }
 
-v2SK_payload_t open_v2SK_payload(struct logger *logger,
-				 pb_stream *container,
-				 struct ike_sa *ike)
+struct v2SK_payload open_v2SK_payload(struct logger *logger,
+				      struct pbs_out *container,
+				      struct ike_sa *ike)
 {
-	static const v2SK_payload_t empty_sk;
-	v2SK_payload_t sk = {
+	static const struct v2SK_payload empty_sk;
+	struct v2SK_payload sk = {
 		.logger = logger,
 		.ike = ike,
 		.payload = {
@@ -287,7 +287,7 @@ v2SK_payload_t open_v2SK_payload(struct logger *logger,
 	return sk;
 }
 
-bool close_v2SK_payload(v2SK_payload_t *sk)
+bool close_v2SK_payload(struct v2SK_payload *sk)
 {
 	/* save cleartext end */
 
@@ -310,14 +310,14 @@ bool close_v2SK_payload(v2SK_payload_t *sk)
 	for (unsigned i = 0; i < padding; i++) {
 		diag_t d = pbs_out_repeated_byte(&sk->pbs, i, 1, "padding and length");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, sk->logger, &d,
+			llog_diag(RC_LOG_SERIOUS, sk->logger, &d,
 				 "error initializing padding for encrypted %s payload: ",
 				 sk->pbs.container->name);
 			return false;
 		}
 	}
 
-	/* emit space for integrity checksum data; save location  */
+	/* emit space for integrity checksum data; save location */
 
 	size_t integ_size = (encrypt_desc_is_aead(sk->ike->sa.st_oakley.ta_encrypt)
 			     ? sk->ike->sa.st_oakley.ta_encrypt->aead_tag_size
@@ -331,7 +331,7 @@ bool close_v2SK_payload(v2SK_payload_t *sk)
 	sk->integrity = chunk2(sk->pbs.cur, integ_size);
 	diag_t d = pbs_out_zero(&sk->pbs, integ_size, "length of truncated HMAC/KEY");
 	if (d != NULL) {
-		log_diag(RC_LOG_SERIOUS, sk->logger, &d, "%s", "");
+		llog_diag(RC_LOG_SERIOUS, sk->logger, &d, "%s", "");
 		return false;
 	}
 
@@ -490,7 +490,7 @@ static void compute_intermediate_mac(struct ike_sa *ike,
 	*out = clone_hunk(mac, "IntAuth");
 }
 
-stf_status encrypt_v2SK_payload(v2SK_payload_t *sk)
+stf_status encrypt_v2SK_payload(struct v2SK_payload *sk)
 {
 	struct ike_sa *ike = sk->ike;
 	uint8_t *auth_start = sk->pbs.container->start;
@@ -526,7 +526,7 @@ stf_status encrypt_v2SK_payload(v2SK_payload_t *sk)
 		bad_case(ike->sa.st_sa_role);
 	}
 
-	/* size of plain or cipher text.  */
+	/* size of plain or cipher text. */
 	size_t enc_size = integ_start - enc_start;
 
 	/*
@@ -648,7 +648,7 @@ static bool ikev2_verify_and_decrypt_sk_payload(struct ike_sa *ike,
 	if (!ike->sa.hidden_variables.st_skeyid_calculated) {
 		endpoint_buf b;
 		pexpect_fail(ike->sa.st_logger, HERE,
-			     "received encrypted packet from %s  but no exponents for state #%lu to decrypt it",
+			     "received encrypted packet from %s but no exponents for state #%lu to decrypt it",
 			     str_endpoint(&md->sender, &b),
 			     ike->sa.st_serialno);
 		return false;
@@ -942,7 +942,7 @@ bool ikev2_collect_fragment(struct msg_digest *md, struct ike_sa *ike)
 {
 	struct v2_incoming_fragments **frags = &ike->sa.st_v2_incoming[v2_msg_role(md)];
 	struct ikev2_skf *skf = &md->chain[ISAKMP_NEXT_v2SKF]->payload.v2skf;
-	pb_stream *e_pbs = &md->chain[ISAKMP_NEXT_v2SKF]->pbs;
+	struct pbs_in *e_pbs = &md->chain[ISAKMP_NEXT_v2SKF]->pbs;
 
 	if (!ike->sa.st_seen_fragmentation_supported) {
 		dbg(" fragments claiming to be from peer while peer did not signal fragmentation support - dropped");
@@ -1038,7 +1038,7 @@ static bool ikev2_reassemble_fragments(struct ike_sa *ike,
 	 * chains).
 	 */
 	struct payload_digest sk = {
-		.pbs = same_chunk_as_in_pbs(md->raw_packet, "decrypted SFK payloads"),
+		.pbs = same_chunk_as_pbs_in(md->raw_packet, "decrypted SFK payloads"),
 		.payload_type = ISAKMP_NEXT_v2SK,
 		.payload.generic.isag_np = (*frags)->first_np,
 	};
@@ -1064,7 +1064,7 @@ bool ikev2_decrypt_msg(struct ike_sa *ike, struct msg_digest *md)
 	if (md->chain[ISAKMP_NEXT_v2SKF] != NULL) {
 		ok = ikev2_reassemble_fragments(ike, md);
 	} else {
-		pb_stream *e_pbs = &md->chain[ISAKMP_NEXT_v2SK]->pbs;
+		struct pbs_in *e_pbs = &md->chain[ISAKMP_NEXT_v2SK]->pbs;
 		/*
 		 * If so impaired, clone the encrypted message before
 		 * it gets decrypted in-place (but only once).
@@ -1086,7 +1086,7 @@ bool ikev2_decrypt_msg(struct ike_sa *ike, struct msg_digest *md)
 		chunk_t plain;
 		ok = ikev2_verify_and_decrypt_sk_payload(ike, md, c, &plain,
 							 e_pbs->cur - md->packet_pbs.start);
-		md->chain[ISAKMP_NEXT_v2SK]->pbs = same_chunk_as_in_pbs(plain, "decrypted SK payload");
+		md->chain[ISAKMP_NEXT_v2SK]->pbs = same_chunk_as_pbs_in(plain, "decrypted SK payload");
 	}
 
 	dbg("#%lu ikev2 %s decrypt %s",
@@ -1139,7 +1139,7 @@ static bool record_outbound_fragment(struct logger *logger,
 
 	/* HDR out */
 
-	pb_stream body;
+	struct pbs_out body;
 	if (!out_struct(hdr, &isakmp_hdr_desc, &frag_stream,
 			&body))
 		return false;
@@ -1153,7 +1153,7 @@ static bool record_outbound_fragment(struct logger *logger,
 	 * fragment, forces the Next Payload.
 	 */
 
-	v2SK_payload_t skf = {
+	struct v2SK_payload skf = {
 		.ike = ike,
 		.logger = logger,
 		.payload = {
@@ -1193,8 +1193,7 @@ static bool record_outbound_fragment(struct logger *logger,
 
 	/* output the fragment */
 
-	if (!pbs_out_hunk(*fragment, &skf.pbs,
-			  "cleartext fragment"))
+	if (!out_hunk(*fragment, &skf.pbs, "cleartext fragment"))
 		return false;
 
 	if (!close_v2SK_payload(&skf)) {
@@ -1215,8 +1214,8 @@ static bool record_outbound_fragment(struct logger *logger,
 	return true;
 }
 
-static bool record_outbound_fragments(const pb_stream *body,
-				      v2SK_payload_t *sk,
+static bool record_outbound_fragments(const struct pbs_out *body,
+				      struct v2SK_payload *sk,
 				      const char *desc,
 				      struct v2_outgoing_fragment **frags)
 {
@@ -1271,15 +1270,16 @@ static bool record_outbound_fragments(const pb_stream *body,
 
 	/*
 	 * Extract the hdr from the original unfragmented message.
-	 * Set it up for auto-update of it's next payload field chain.
+	 * Set it up for auto-update of its next payload field chain.
 	 */
 	struct isakmp_hdr hdr;
 	{
-		pb_stream pbs;
+		struct pbs_in pbs;
 		init_pbs(&pbs, body->start, pbs_offset(body), "sk hdr");
-		diag_t d = pbs_in_struct(&pbs, &isakmp_hdr_desc, &hdr, sizeof(hdr), NULL);
+		struct pbs_in ignored;
+		diag_t d = pbs_in_struct(&pbs, &isakmp_hdr_desc, &hdr, sizeof(hdr), &ignored);
 		if (d != NULL) {
-			log_diag(RC_LOG, sk->logger, &d, "%s", "");
+			llog_diag(RC_LOG, sk->logger, &d, "%s", "");
 			return false;
 		}
 	}
@@ -1292,11 +1292,12 @@ static bool record_outbound_fragments(const pb_stream *body,
 	 */
 	enum next_payload_types_ikev2 skf_np;
 	{
-		pb_stream pbs = same_chunk_as_in_pbs(sk->payload, "sk");
+		struct pbs_in pbs = same_chunk_as_pbs_in(sk->payload, "sk");
 		struct ikev2_generic e;
-		diag_t d = pbs_in_struct(&pbs, &ikev2_sk_desc, &e, sizeof(e), NULL);
+		struct pbs_in ignored;
+		diag_t d = pbs_in_struct(&pbs, &ikev2_sk_desc, &e, sizeof(e), &ignored);
 		if (d != NULL) {
-			log_diag(RC_LOG, sk->logger, &d, "%s", "");
+			llog_diag(RC_LOG, sk->logger, &d, "%s", "");
 			return false;
 		}
 		skf_np = e.isag_np;
@@ -1337,8 +1338,8 @@ static bool record_outbound_fragments(const pb_stream *body,
  * children trying to exchange messages.
  */
 
-stf_status record_v2SK_message(pb_stream *msg,
-			       v2SK_payload_t *sk,
+stf_status record_v2SK_message(struct pbs_out *msg,
+			       struct v2SK_payload *sk,
 			       const char *what,
 			       enum message_role message)
 {

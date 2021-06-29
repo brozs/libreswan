@@ -133,7 +133,7 @@ bool ikev2_calculate_rsa_hash(struct ike_sa *ike,
 				DBG_dump_hunk("NO_PPK_AUTH payload", *no_ppk_auth);
 			}
 		} else {
-			if (!pbs_out_hunk(sig, a_pbs, "rsa signature"))
+			if (!out_hunk(sig, a_pbs, "rsa signature"))
 				return FALSE;
 		}
 	}
@@ -142,28 +142,26 @@ bool ikev2_calculate_rsa_hash(struct ike_sa *ike,
 	return TRUE;
 }
 
-stf_status ikev2_verify_rsa_hash(struct ike_sa *ike,
-				 const struct crypt_mac *idhash,
-				 shunk_t signature,
-				 const struct hash_desc *hash_algo)
+diag_t v2_authsig_and_log_using_RSA_pubkey(struct ike_sa *ike,
+					   const struct crypt_mac *idhash,
+					   shunk_t signature,
+					   const struct hash_desc *hash_algo)
 {
 	statetime_t start = statetime_start(&ike->sa);
 
 	/* XXX: table lookup? */
 	if (hash_algo->common.ikev2_alg_id < 0) {
-		log_state(RC_LOG_SERIOUS, &ike->sa, "unknown or unsupported hash algorithm");
-		return STF_INTERNAL_ERROR;
+		return diag("authentication failed: unknown or unsupported hash algorithm");
 	}
 
 	if (signature.len == 0) {
-		log_state(RC_LOG_SERIOUS, &ike->sa, "rejecting received zero-length RSA signature");
-		return STF_FATAL;
+		return diag("authentication failed: rejecting received zero-length RSA signature");
 	}
 
 	struct crypt_mac hash = v2_calculate_sighash(ike, idhash, hash_algo,
 						     REMOTE_PERSPECTIVE);
-	stf_status retstat = check_signature_gen(ike, &hash, signature, hash_algo,
-						 &pubkey_type_rsa, try_signature_RSA);
+	diag_t d = authsig_and_log_using_pubkey(ike, &hash, signature, hash_algo,
+						&pubkey_type_rsa, authsig_using_RSA_pubkey);
 	statetime_stop(&start, "%s()", __func__);
-	return retstat;
+	return d;
 }

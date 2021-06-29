@@ -24,25 +24,30 @@
  * required value.
  */
 
-#ifndef HERE_BASENAME
-#define HERE_BASENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+#ifndef HERE_FILENAME
+#define HERE_FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #endif
 
 /*
  * For appending: (in FUNC() at FILE:LINE)
  */
 
-typedef const struct {
+typedef const struct where {
 	const char *func;
-	const char *basename;
+	const char *file;
 	long line;
-} where_t;
+} *where_t;
 
-#define HERE (where_t) { .func = __func__, .basename = HERE_BASENAME , .line = __LINE__}
-#define PRI_WHERE "(in %s() at %s:%lu)"
-#define pri_where(SC) (SC).func, (SC).basename, (SC).line
-
-/* XXX: hack for old code passing around parameters */
-#define WHERE(FUNC, BASENAME, LINE) (where_t) {FUNC, BASENAME, LINE}
+#define HERE						\
+	({						\
+		static const struct where here = {	\
+			.func = __func__,		\
+			.file = HERE_FILENAME,		\
+			.line = __LINE__,		\
+		};					\
+		&here;					\
+	})
+#define PRI_WHERE "(%s() +%lu %s)"
+#define pri_where(SC) (SC)->func, (SC)->line, (SC)->file
 
 #endif

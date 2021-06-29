@@ -65,7 +65,7 @@
 #include "ike_alg.h"
 #include "ikev2_redirect.h"
 #include "root_certs.h"		/* for init_root_certs() */
-#include "hostpair.h"		/* for init_host_pair() */
+#include "host_pair.h"		/* for init_host_pair() */
 #include "ikev1.h"		/* for init_ikev1() */
 #include "ikev2.h"		/* for init_ikev2() */
 #include "crypt_symkey.h"	/* for init_crypt_symkey() */
@@ -81,9 +81,7 @@
 # include <cap-ng.h>	/* from libcap-ng devel */
 #endif
 
-#ifdef HAVE_LABELED_IPSEC
-# include "security_selinux.h"
-#endif
+#include "labeled_ipsec.h"		/* for init_labeled_ipsec() */
 
 # include "pluto_sd.h"		/* for pluto_sd_init() */
 
@@ -159,7 +157,7 @@ static const char compile_time_interop_options[] = ""
 	" IKEv1"
 #endif
 #ifdef XFRM_SUPPORT
-	" XFRM(netkey)"
+	" XFRM"
 #endif
 #ifdef USE_XFRM_INTERFACE
 	" XFRMI"
@@ -191,9 +189,9 @@ static const char compile_time_interop_options[] = ""
 	" (IPsec profile)"
 #endif
 #ifdef USE_NSS_KDF
-        " (NSS-PRF)"
+	" (NSS-PRF)"
 #else
-        " (native-PRF)"
+	" (native-PRF)"
 #endif
 #ifdef USE_DNSSEC
 	" DNSSEC"
@@ -638,7 +636,7 @@ static void set_dnssec_file_names (struct starter_config *cfg)
 		pfreeany(pluto_dnssec_rootfile);
 		set_cfg_string(&pluto_dnssec_rootfile,
 				cfg->setup.strings[KSF_PLUTO_DNSSEC_ROOTKEY_FILE]);
-	} else  {
+	} else {
 		/* unset the global one config file unset it */
 		pfreeany(pluto_dnssec_rootfile);
 		pluto_dnssec_rootfile = NULL;
@@ -665,7 +663,7 @@ int main(int argc, char **argv)
 	 * malloc() call, so scan for them here.
 	 *
 	 * - leak-detective is immutable, it must come before the
-         *   first malloc()
+	 *   first malloc()
 	 *
 	 * - efence-protect seems to be less strict, but enabling it
 	 *   early must be a good thing (TM) right
@@ -729,7 +727,8 @@ int main(int argc, char **argv)
 		 */
 		int longindex = -1;
 		int c = getopt_long(argc, argv, "", long_opts, &longindex);
-		if (c < 0) break;
+		if (c < 0)
+			break;
 
 		if (longindex >= 0) {
 			passert(c != '?' && c != ':'); /* no error */
@@ -903,7 +902,7 @@ int main(int argc, char **argv)
 		case 'L':	/* --listen ip_addr */
 		{
 			ip_address lip;
-			err_t e = ttoaddr_num(optarg, 0, AF_UNSPEC, &lip);
+			err_t e = ttoaddress_num(shunk1(optarg), NULL/*UNSPEC*/, &lip);
 
 			if (e != NULL) {
 				/*
@@ -1128,7 +1127,8 @@ int main(int argc, char **argv)
 		case 'y':	/* --global-redirect-to */
 		{
 			ip_address rip;
-			check_err(ttoaddr(optarg, 0, AF_UNSPEC, &rip), longindex, logger);
+			check_err(ttoaddress_dns(shunk1(optarg), NULL/*UNSPEC*/, &rip),
+				  longindex, logger);
 			set_global_redirect_dests(optarg);
 			llog(RC_LOG, logger,
 				    "all IKE_SA_INIT requests will from now on be redirected to: %s\n",
@@ -1744,7 +1744,7 @@ int main(int argc, char **argv)
 	init_root_certs();
 	init_secret(logger);
 #ifdef USE_IKEv1
-	init_ikev1();
+	init_ikev1(logger);
 #endif
 	init_ikev2();
 	init_states();
@@ -1769,9 +1769,7 @@ int main(int argc, char **argv)
 #if defined(LIBCURL) || defined(LIBLDAP)
 	start_crl_fetch_helper(logger);
 #endif
-#ifdef HAVE_LABELED_IPSEC
-	init_selinux(logger);
-#endif
+	init_labeled_ipsec(logger);
 #ifdef USE_SYSTEMD_WATCHDOG
 	pluto_sd_init(logger);
 #endif

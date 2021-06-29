@@ -43,8 +43,15 @@
 #define ESPINUDP_WITH_NON_ESP   2       /* draft-ietf-ipsec-nat-t-ike-02    */
 #endif
 
-/* and the SA ID stuff */
+/*
+ * And the SA ID stuff.
+ *
+ * XXX: this should be hunk like
+ */
+
 typedef uint32_t ipsec_spi_t;
+#define PRI_IPSEC_SPI "%08x"
+#define pri_ipsec_spi(SPI) htonl(SPI)
 
 /*
  * definitions for user space, taken linux/include/libreswan/ipsec_sa.h
@@ -79,7 +86,7 @@ extern err_t ttoul(const char *src, size_t srclen, int format, unsigned long *ds
 extern err_t ttoulb(const char *src, size_t srclen, int format,
 	unsigned long upb, unsigned long *dst);
 extern size_t ultot(unsigned long src, int format, char *buf, size_t buflen);
-#define ULTOT_BUF       (22 + 1)  /* holds 64 bits in octal */
+#define ULTOT_BUF	((64+2)/3 + 1)  /* holds 64 bits in octal + NUL */
 
 extern err_t ttodata(const char *src, size_t srclen, int base, char *buf,
 	      size_t buflen, size_t *needed);
@@ -88,7 +95,7 @@ extern err_t ttodatav(const char *src, size_t srclen, int base,
 	       char *errp, size_t errlen, unsigned int flags);
 #define TTODATAV_BUF    40              /* ttodatav's largest non-literal message */
 #define TTODATAV_IGNORESPACE  (1 << 1)  /* ignore spaces in base64 encodings */
-#define TTODATAV_SPACECOUNTS  0         /* do not ignore spaces in base64   */
+#define TTODATAV_SPACECOUNTS  0         /* do not ignore spaces in base64 */
 
 extern size_t datatot(const unsigned char *src, size_t srclen, int format,
 	       char *buf, size_t buflen);

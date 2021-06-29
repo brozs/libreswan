@@ -64,7 +64,7 @@
 
 struct msgid_list {
 	msgid_t msgid;           /* network order */
-	struct msgid_list     *next;
+	struct msgid_list *next;
 };
 
 bool unique_msgid(const struct state *st, msgid_t msgid)
@@ -105,7 +105,7 @@ msgid_t generate_msgid(const struct state *st)
 			break;
 
 		if (--timeout == 0) {
-			log_state(RC_LOG, st, 
+			log_state(RC_LOG, st,
 				"gave up looking for unique msgid; using %08" PRIx32,
 				msgid);
 			break;

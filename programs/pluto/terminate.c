@@ -58,14 +58,13 @@
 #include "nat_traversal.h"
 
 
-#include "hostpair.h"
+#include "host_pair.h"
 
-static int terminate_a_connection(struct connection *c, struct fd *whackfd,
-				  void *unused_arg UNUSED)
+static int terminate_a_connection(struct connection *c, void *unused_arg UNUSED, struct logger *logger)
 {
 	/* XXX: something better? */
 	close_any(&c->logger->global_whackfd);
-	c->logger->global_whackfd = dup_any(whackfd);
+	c->logger->global_whackfd = fd_dup(logger->global_whackfd, HERE);
 
 	llog(RC_LOG, c->logger,
 	     "terminating SAs using this connection");
@@ -82,7 +81,7 @@ static int terminate_a_connection(struct connection *c, struct fd *whackfd,
 			struct state *st = state_with_serialno(c->newest_ipsec_sa);
 			/* XXX: something better? */
 			close_any(&st->st_logger->global_whackfd);
-			st->st_logger->global_whackfd = dup_any(whackfd);
+			st->st_logger->global_whackfd = fd_dup(logger->global_whackfd, HERE);
 			delete_state(st);
 		}
 	} else {
@@ -92,7 +91,7 @@ static int terminate_a_connection(struct connection *c, struct fd *whackfd,
 		 */
 		connection_still_exists = c->kind != CK_INSTANCE;
 		dbg("connection not shared - terminating IKE and IPsec SA");
-		delete_states_by_connection(c, false, whackfd);
+		delete_states_by_connection(c, /*relations?*/false);
 	}
 
 	if (connection_still_exists) {
@@ -103,7 +102,7 @@ static int terminate_a_connection(struct connection *c, struct fd *whackfd,
 	return 1;
 }
 
-void terminate_connection(const char *name, bool quiet, struct fd *whackfd)
+void terminate_connections_by_name(const char *name, bool quiet, struct logger *logger)
 {
 	/*
 	 * Loop because more than one may match (template and
@@ -119,20 +118,21 @@ void terminate_connection(const char *name, bool quiet, struct fd *whackfd)
 
 			if (streq(c->name, name) &&
 			    c->kind >= CK_PERMANENT &&
-			    !NEVER_NEGOTIATE(c->policy))
-				(void) terminate_a_connection(c, whackfd, NULL);
+			    !NEVER_NEGOTIATE(c->policy)) {
+				terminate_a_connection(c, NULL, logger);
+			}
 			c = n;
 		}
 	} else {
-		int count = foreach_connection_by_alias(name, whackfd, terminate_a_connection, NULL);
+		int count = foreach_connection_by_alias(name, terminate_a_connection, NULL, logger);
 		if (count == 0) {
 			if (!quiet)
-				log_global(RC_UNKNOWN_NAME, whackfd,
-					   "no such connection or aliased connection named \"%s\"", name);
+				llog(RC_UNKNOWN_NAME, logger,
+				     "no such connection or aliased connection named \"%s\"", name);
 		} else {
-			log_global(RC_COMMENT, whackfd,
-				   "terminated %d connections from aliased connection \"%s\"",
-				   count, name);
+			llog(RC_COMMENT, logger,
+			     "terminated %d connections from aliased connection \"%s\"",
+			     count, name);
 		}
 	}
 }

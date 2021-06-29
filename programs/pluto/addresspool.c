@@ -79,9 +79,9 @@ static const struct list empty_list = {
 			passert(WHAT->LIST.first < pool->nr_leases);	\
 			passert(WHAT->LIST.last != SENTINEL);		\
 			passert(WHAT->LIST.last < pool->nr_leases);	\
-                }							\
-	        empty_;							\
-        })
+		}							\
+		empty_;							\
+	})
 
 #define HEAD(WHAT, LIST, ENTRY)						\
 	({								\
@@ -243,24 +243,10 @@ static void unhash_lease_id(struct ip_pool *pool, struct lease *lease)
 	pool->nr_reusable--;
 }
 
-static ip_address lease_address(const struct ip_pool *pool,
-				const struct lease *lease)
+static err_t pool_lease_to_address(const struct ip_pool *pool, const struct lease *lease,
+				   ip_address *address)
 {
-	/* careful here manipulating raw bits and bytes  */
-	ip_address addr = pool->r.start;
-	chunk_t addr_chunk = address_as_chunk(&addr);
-	/* extract the end */
-	uint32_t addr_n;
-	passert(addr_chunk.len >= sizeof(addr_n));
-	uint8_t *ptr = addr_chunk.ptr; /* cast void */
-	ptr += addr_chunk.len - sizeof(addr_n);
-	memcpy(&addr_n, ptr, sizeof(addr_n));
-	/* new value - overflow? */
-	unsigned i = lease - pool->leases;
-	addr_n = htonl(ntohl(addr_n) + i);
-	/* put it back */
-	memcpy(ptr, &addr_n, sizeof(addr_n));
-	return addr;
+	return range_offset_to_address(pool->r, lease - pool->leases, address);
 }
 
 static void DBG_pool(bool verbose, const struct ip_pool *pool,
@@ -293,7 +279,11 @@ static void DBG_lease(bool verbose, const struct ip_pool *pool, const struct lea
 		jam(buf, "pool ");
 		jam_range(buf, &pool->r);
 		jam(buf, " lease ");
-		ip_address addr = lease_address(pool, lease);
+		ip_address addr;
+		err_t err = pool_lease_to_address(pool, lease, &addr);
+		if (err != NULL) {
+			jam(buf, "[EXPECTATION FAILED: %s]", err);
+		}
 		jam_address(buf, &addr);
 		if (co_serial_is_set(lease->assigned_to)) {
 			jam(buf, " "PRI_CO, pri_co(lease->assigned_to));
@@ -391,11 +381,16 @@ static struct lease *connection_lease(struct connection *c)
 	 * membership in the range.
 	 */
 	struct ip_pool *pool = c->pool;
-	ip_address cp = selector_prefix(&c->spd.that.client);
-	uint32_t i = ntohl_address(&cp) - ntohl_address(&pool->r.start);
+	ip_address prefix = selector_prefix(c->spd.that.client);
+	uintmax_t offset;
+	err_t err = address_to_range_offset(pool->r, prefix, &offset);
+	if (err != NULL) {
+		pexpect_fail(c->logger, HERE, "offset of address in range failed: %s", err);
+		return NULL;
+	}
 	passert(pool->nr_leases <= pool->size);
-	passert(i < pool->nr_leases);
-	struct lease *lease = &pool->leases[i];
+	passert(offset < pool->nr_leases);
+	struct lease *lease = &pool->leases[offset];
 
 	/*
 	 * Has the lease been "stolen" by a newer connection with the
@@ -533,9 +528,8 @@ err_t lease_that_address(struct connection *c, const struct state *st)
 	bool reusable = can_reuse_lease(c);
 
 	id_buf that_idb;
-	char thatstr[IDTOA_BUF + MAX_XAUTH_USERNAME_LEN];
+	char thatstr[sizeof(id_buf) + MAX_XAUTH_USERNAME_LEN];
 	const char *that_name = str_id(that_id, &that_idb);
-	const char *story;
 
 	jam_str(thatstr, sizeof(thatstr), that_name);
 
@@ -560,6 +554,7 @@ err_t lease_that_address(struct connection *c, const struct state *st)
 	}
 
 	struct lease *new_lease = NULL;
+	const char *story;
 	if (reusable) {
 		new_lease = recover_lease(c, thatstr);
 		story = "recovered";
@@ -636,17 +631,21 @@ err_t lease_that_address(struct connection *c, const struct state *st)
 	}
 
 	/*
-         * convert index i in range to an IP_address
+	 * convert index i in range to an IP_address
 	 *
 	 * XXX: does this update that.client addr as a side effect?
 	 *
 	 * Can't assert that .assigned_to is unset as this connection
 	 * may be in the process of stealing the lease.
 	 */
-	ip_address ia = lease_address(pool, new_lease);
+	ip_address ia;
+	err_t err = pool_lease_to_address(pool, new_lease, &ia);
+	if (err != NULL) {
+		llog_pexpect_fail(st->st_logger, HERE, "%s", err);
+	}
 	c->spd.that.has_lease = true;
 	c->spd.that.has_client = true;
-	c->spd.that.client = selector_from_address(&ia);
+	c->spd.that.client = selector_from_address(ia);
 	new_lease->assigned_to = c->serialno;
 
 	if (DBGP(DBG_BASE)) {
@@ -727,90 +726,103 @@ void reference_addresspool(struct connection *c)
 
 /*
  * Finds an ip_pool that has exactly matching bounds.
- * If a pool overlaps, an error is logged AND returned
- * *pool is set to the entry found; NULL if none found.
+ *
+ * If a pool overlaps, a diagnostic is returned.  Regardless *POOL is
+ * set to the entry found; NULL if none found.
  */
-bool find_addresspool(const ip_range *pool_range, struct ip_pool **pool, struct logger *logger)
+
+diag_t find_addresspool(const ip_range pool_range, struct ip_pool **pool)
 {
 	struct ip_pool *h;
 
 	*pool = NULL;	/* nothing found (yet) */
 	for (h = pluto_pools; h != NULL; h = h->next) {
-		const ip_range *a = pool_range;
-		const ip_range *b = &h->r;
 
-		int sc = addrcmp(&a->start, &b->start);
-
-		if (sc == 0 && addrcmp(&a->end, &b->end) == 0) {
+		if (range_eq_range(pool_range, h->r)) {
 			/* exact match */
 			*pool = h;
-			break;
-		} else if (sc < 0 ? addrcmp(&a->end, &b->start) < 0 :
-				    addrcmp(&a->start, &b->end) > 0) {
-			/* before or after */
-		} else {
-			/* overlap */
+			return NULL;
+		}
+
+		if (range_overlaps_range(pool_range, h->r)) {
+			/* bad */
 			range_buf prbuf;
 			range_buf hbuf;
-
-			llog(RC_CLASH, logger,
-				    "ERROR: new addresspool %s INEXACTLY OVERLAPS with existing one %s.",
-				    str_range(pool_range, &prbuf),
+			return diag("new addresspool %s INEXACTLY OVERLAPS with existing one %s.",
+				    str_range(&pool_range, &prbuf),
 				    str_range(&h->r, &hbuf));
-			return false;
 		}
 	}
-	return true;
+	return NULL;
 }
 
 /*
- * the caller must enforce the following:
- * - Range must not include 0.0.0.0 or ::0
- * - The range must be non-empty
+ * Create an address pool for POOL_RANGE.  Reject invalid ranges.
  */
 
-struct ip_pool *install_addresspool(const ip_range *pool_range, struct logger *logger)
+diag_t install_addresspool(const ip_range pool_range, struct ip_pool **pool)
 {
-	struct ip_pool **head = &pluto_pools;
-	struct ip_pool *pool = NULL;
-	if (!find_addresspool(pool_range, &pool, logger)) {
-		return NULL;
+	*pool = NULL;
+
+	/* can't be empty */
+	uintmax_t pool_size = range_size(pool_range);
+	if (pool_size == 0) {
+		range_buf rb;
+		return diag("address pool %s is empty",
+			    str_range(&pool_range, &rb));
 	}
 
-	if (pool != NULL) {
-		/* re-use existing pool */
-		if (DBGP(DBG_BASE)) {
-			DBG_pool(true, pool, "reusing existing address pool@%p", pool);
-		}
-		return pool;
-	}
-
-	/* make a new pool */
-	pool = alloc_thing(struct ip_pool, "addresspool entry");
-
-	pool->pool_refcount = 0;
-	pool->r = *pool_range;
-	if (range_size(&pool->r, &pool->size)) {
+	if (pool_size >= UINT32_MAX) {
 		/*
 		 * uint32_t overflow, 2001:db8:0:3::/64 truncated to UINT32_MAX
 		 * uint32_t overflow, 2001:db8:0:3:1::/96, truncated by 1
 		 */
-		dbg("WARNING addresspool size overflow truncated to %u", pool->size);
+		pool_size = UINT32_MAX;
+		dbg("WARNING addresspool size overflow truncated to %ju", pool_size);
 	}
-	passert(pool->size > 0);
 
-	pool->nr_in_use = 0;
-	pool->nr_leases = 0;
-	pool->free_list = empty_list;
-	pool->leases = NULL;
+	/* can't start at 0 */
+	ip_address start = range_start(pool_range);
+	if (address_is_any(start)) {
+		range_buf rb;
+		return diag("address pool %s starts at address zero",
+			    str_range(&pool_range, &rb));
+	}
+
+	/* can't overlap or duplicate */
+	struct ip_pool **head = &pluto_pools;
+	diag_t d = find_addresspool(pool_range, pool);
+	if (d != NULL) {
+		return d;
+	}
+
+	if (*pool != NULL) {
+		/* re-use existing pool */
+		if (DBGP(DBG_BASE)) {
+			DBG_pool(true, *pool, "reusing existing address pool@%p", pool);
+		}
+		return NULL;
+	}
+
+	/* make a new pool */
+	struct ip_pool *new_pool = alloc_thing(struct ip_pool, "addresspool entry");
+	new_pool->pool_refcount = 0;
+	new_pool->r = pool_range;
+	new_pool->size = pool_size;
+	new_pool->nr_in_use = 0;
+	new_pool->nr_leases = 0;
+	new_pool->free_list = empty_list;
+	new_pool->leases = NULL;
+
 	/* insert */
-	pool->next = *head;
-	*head = pool;
+	new_pool->next = *head;
+	*head = new_pool;
 
 	if (DBGP(DBG_BASE)) {
-		DBG_pool(false, pool, "creating new address pool@%p", pool);
+		DBG_pool(false, new_pool, "creating new address pool@%p", new_pool);
 	}
-	return pool;
+	*pool = new_pool;
+	return NULL;
 }
 
 void show_addresspool_status(struct show *s)
@@ -835,7 +847,11 @@ void show_addresspool_status(struct show *s)
 		unsigned nr_reusable_names = 0;
 		for (unsigned l = 0; l < pool->nr_leases; l++) {
 			struct lease *lease = &pool->leases[l];
-			ip_address lease_ip = lease_address(pool, lease);
+			ip_address lease_ip;
+			err_t err = pool_lease_to_address(pool, lease, &lease_ip);
+			if (err != NULL) {
+				llog_pexpect_fail(show_logger(s), HERE, "%s", err);
+			}
 			address_buf lease_ipb;
 			const char *lease_str = str_address(&lease_ip, &lease_ipb);
 			struct connection *c = connection_by_serialno(lease->assigned_to);

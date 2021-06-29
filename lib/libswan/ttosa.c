@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "ip_said.h"
+#include "ip_info.h"
 
 static struct magic {
 	char *name;
@@ -30,7 +31,8 @@ static struct magic {
 	{ "%reject", "int258@0.0.0.0" },
 	{ "%hold", "int259@0.0.0.0" },
 	{ "%trap", "int260@0.0.0.0" },
-	{ "%trapsubnet", "int261@0.0.0.0" },
+	{ "%ignore", "int261@0.0.0.0" },
+	{ "%trapsubnet", "int262@0.0.0.0" },
 	{ NULL, NULL }
 };
 
@@ -52,7 +54,6 @@ ip_said *sa;
 	struct magic *mp;
 	size_t nlen;
 #       define  MINLEN  5	/* ah0@0 is as short as it can get */
-	int af;
 	int base;
 
 	if (srclen == 0)
@@ -89,19 +90,20 @@ ip_said *sa;
 	if (spi >= at)
 		return "no SPI in SA specifier";
 
+	const struct ip_info *afi;
 	switch (*spi) {
 	case '.':
-		af = AF_INET;
+		afi = &ipv4_info;
 		spi++;
 		base = 16;
 		break;
 	case ':':
-		af = AF_INET6;
+		afi = &ipv6_info;
 		spi++;
 		base = 16;
 		break;
 	default:
-		af = AF_UNSPEC;	/* not known yet */
+		afi = NULL;	/* not known yet */
 		base = 0;
 		break;
 	}
@@ -116,9 +118,7 @@ ip_said *sa;
 
 	addr = at + 1;
 	alen = srclen - (addr - src);
-	if (af == AF_UNSPEC)
-		af = (memchr(addr, ':', alen) != NULL) ? AF_INET6 : AF_INET;
-	oops = ttoaddr_num(addr, alen, af, &sa->dst);
+	oops = ttoaddress_num(shunk2(addr, alen), afi, &sa->dst);
 	if (oops != NULL)
 		return oops;
 

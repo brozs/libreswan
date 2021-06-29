@@ -30,11 +30,12 @@
 #include "connections.h"	/* for struct end */
 #include "demux.h"
 #include "virtual_ip.h"
-#include "hostpair.h"
+#include "host_pair.h"
 #include "ip_info.h"
 #include "ip_selector.h"
-#include "security_selinux.h"
-#include "labeled_ipsec.h"		/* for MAX_SECCTX_LEN */
+#include "labeled_ipsec.h"
+#include "ip_range.h"
+#include "iface.h"
 
 /*
  * While the RFC seems to suggest that the traffic selectors come in
@@ -78,59 +79,62 @@ void ikev2_print_ts(const struct traffic_selector *ts)
 		DBG_log("  port range: %d-%d", ts->startport, ts->endport);
 		range_buf b;
 		DBG_log("  ip range: %s", str_range(&ts->net, &b));
-		if (ts->sec_label.len != 0)
+		if (ts->sec_label.len != 0) {
 			DBG_dump_hunk("security label:", ts->sec_label);
+		} else {
+			DBG_log("  security label: unset");
+		}
 	}
 }
 
-static void ts_to_end(const struct traffic_selector *ts, struct end *end,
-		      struct traffic_selector *st_ts)
+static void traffic_selector_to_end(const struct traffic_selector *ts,
+				    struct end *end, struct traffic_selector *child_sa_ts)
 {
 	ikev2_print_ts(ts);
 	ip_subnet subnet;
-	/* XXX: check conversion worked */
-	rangetosubnet(&ts->net.start, &ts->net.end, &subnet);
+	happy(range_to_subnet(ts->net, &subnet));
 	const ip_protocol *protocol = protocol_by_ipproto(ts->ipprotoid);
 	/* XXX: check port range valid */
 	ip_port port = ip_hport(ts->startport);
-	end->client = selector_from_subnet_protocol_port(&subnet, protocol, port);
+	end->client = selector_from_subnet_protocol_port(subnet, protocol, port);
 	/* redundant */
 	end->port = ts->startport;
 	end->protocol = ts->ipprotoid;
-	end->has_client = !selector_is_address(&end->client, &end->host_addr);
+	end->has_client = !selector_eq_address(end->client, end->host_addr);
 	/* also save in state */
-	*st_ts = *ts;
+	*child_sa_ts = *ts;
 }
 
 /* rewrite me with address_as_{chunk,shunk}()? */
 /* For now, note the struct traffic_selector can contain
  * two selectors - an IPvX range and a sec_label
  */
-struct traffic_selector ikev2_end_to_ts(const struct end *e, const struct state *st)
+struct traffic_selector traffic_selector_from_end(const struct end *e)
 {
-	struct traffic_selector ts;
-
-	zero(&ts);	/* OK: no pointer fields */
-
-	switch (selector_type(&e->client)->af) {
-	case AF_INET:
-		ts.ts_type = IKEv2_TS_IPV4_ADDR_RANGE;
-		break;
-	case AF_INET6:
-		ts.ts_type = IKEv2_TS_IPV6_ADDR_RANGE;
-		break;
-	}
-
-	/* subnet => range */
-	ts.net = selector_range(&e->client);
-	/* Setting ts_type IKEv2_TS_FC_ADDR_RANGE (RFC-4595) not yet supported */
-
-	ts.ipprotoid = e->protocol;
+	struct traffic_selector ts = {
+		/*
+		 * Setting ts_type IKEv2_TS_FC_ADDR_RANGE (RFC-4595)
+		 * not yet supported.
+		 */
+		.ts_type = selector_type(&e->client)->ikev2_ts_addr_range_type,
+		/* subnet => range */
+		.net = selector_range(e->client),
+		.ipprotoid = e->protocol,
+		/*
+		 * Use the 'instance/narrowed' label from the ACQUIRE
+		 * and stored in the connection instance's sends, if
+		 * present.
+		 */
+		.sec_label = HUNK_AS_SHUNK(e->sec_label),
+	};
 
 	/*
-	 * if port is %any or 0 we mean all ports (or all iccmp/icmpv6)
-	 * See RFC-5996 Section 3.13.1 handling for ICMP(1) and ICMPv6(58)
-	 *   we only support providing Type, not Code, eg protoport=1/1
+	 * if port is %any or 0 we mean all ports (or all
+	 * iccmp/icmpv6).
+	 *
+	 * See RFC-5996 Section 3.13.1 handling for ICMP(1) and
+	 * ICMPv6(58) we only support providing Type, not Code, eg
+	 * protoport=1/1
 	 */
 	if (e->port == 0 || e->has_port_wildcard) {
 		ts.startport = 0;
@@ -140,38 +144,25 @@ struct traffic_selector ikev2_end_to_ts(const struct end *e, const struct state 
 		ts.endport = e->port;
 	}
 
-	/*
-	 * Use the 'instance/narrowed' label from the ACQUIRE, if
-	 * present.
-	 *
-	 * Points into either the END, or
-	 * .st_{seen,acquired}_sec_label.
-	 */
-	ts.sec_label = HUNK_AS_SHUNK((st->st_seen_sec_label.len != 0) ?
-					st->st_seen_sec_label :
-					st->st_acquired_sec_label);
-
 	return ts;
 }
 
 /*
  * A struct end is converted to a struct traffic_selector.
- * This (currently) can contain both an IP range AND a
- * SEC_LABEL, which will get output here as two Traffic
- * Selectors. The label is optional, the IP range is
- * mandatory.
+ *
+ * This (currently) can contain both an IP range AND a SEC_LABEL,
+ * which will get output here as two Traffic Selectors. The label is
+ * optional, the IP range is mandatory.
  */
-static stf_status ikev2_emit_ts(pb_stream *outpbs,
-				const struct_desc *ts_desc,
-				const struct traffic_selector *ts,
-				const struct state *st)
+static stf_status emit_v2TS(struct pbs_out *outpbs,
+			    const struct_desc *ts_desc,
+			    const struct traffic_selector *ts)
 {
-	pb_stream ts_pbs;
-	bool with_label = ts->sec_label.len != 0;
+	struct pbs_out ts_pbs;
+	bool with_label = (ts->sec_label.len > 0);
 
 	if (ts->ts_type != IKEv2_TS_IPV4_ADDR_RANGE &&
-		ts->ts_type != IKEv2_TS_IPV6_ADDR_RANGE)
-	{
+	    ts->ts_type != IKEv2_TS_IPV6_ADDR_RANGE) {
 		return STF_INTERNAL_ERROR;
 	}
 
@@ -179,10 +170,13 @@ static stf_status ikev2_emit_ts(pb_stream *outpbs,
 		struct ikev2_ts its = {
 			.isat_critical = ISAKMP_PAYLOAD_NONCRITICAL,
 			/*
-			 * If there is a security label in the Traffic Selector,
-			 * then we must send a TS_SECLABEL substructure as part of the
-			 * Traffic Selector (TS) Payload.
-			 * That means the TS Payload contains two TS substructures:
+			 * If there is a security label in the Traffic
+			 * Selector, then we must send a TS_SECLABEL
+			 * substructure as part of the Traffic
+			 * Selector (TS) Payload.
+			 *
+			 * That means the TS Payload contains two TS
+			 * substructures:
 			 *  - One for the address/port range
 			 *  - One for the TS_SECLABEL
 			 */
@@ -221,47 +215,51 @@ static stf_status ikev2_emit_ts(pb_stream *outpbs,
 			return STF_INTERNAL_ERROR;
 
 		diag_t d;
-		d = pbs_out_address(&ts_range_pbs, &ts->net.start, "IP start");
+		d = pbs_out_address(&ts_range_pbs, range_start(ts->net), "IP start");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
 			return STF_INTERNAL_ERROR;
 		}
-		d = pbs_out_address(&ts_range_pbs, &ts->net.end, "IP end");
+		d = pbs_out_address(&ts_range_pbs, range_end(ts->net), "IP end");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
 			return STF_INTERNAL_ERROR;
 		}
 		close_output_pbs(&ts_range_pbs);
 	}
 
+	/*
+	 * Emit the security label, if known.
+	 */
 	if (with_label) {
-		pb_stream ts_label_pbs;
-		shunk_t out_label;
 
 		struct ikev2_ts_header ts_header = {
 			.isath_type = IKEv2_TS_SECLABEL,
 			.isath_ipprotoid = 0 /* really RESERVED, not iprotoid */
 		};
 		/* Output the header of the TS_SECLABEL substructure payload. */
+		struct pbs_out ts_label_pbs;
 		if (!out_struct(&ts_header, &ikev2_ts_header_desc, &ts_pbs, &ts_label_pbs)) {
 			return STF_INTERNAL_ERROR;
 		}
 
-		/* Output the security label value of the TS_SECLABEL substructure payload.
-		 * If we got ACQUIRE, or received a subset TS_LABEL, use that one - it is subset of connection policy one
+		/*
+		 * Output the security label value of the TS_SECLABEL
+		 * substructure payload.
+		 *
+		 * If we got ACQUIRE, or received a subset TS_LABEL,
+		 * use that one - it is subset of connection policy
+		 * one
 		 */
-		if (st->st_acquired_sec_label.len != 0)
-			out_label = HUNK_AS_SHUNK(st->st_acquired_sec_label);
-		else if (st->st_seen_sec_label.len != 0)
-			out_label = HUNK_AS_SHUNK(st->st_seen_sec_label);
-		else
-			out_label = ts->sec_label;
 
-		diag_t d = pbs_out_raw(&ts_label_pbs, out_label.ptr, out_label.len, "output Security label");
+		dbg("emitting sec_label="PRI_SHUNK, pri_shunk(ts->sec_label));
+
+		diag_t d = pbs_out_hunk(&ts_label_pbs, ts->sec_label, "output Security label");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, outpbs->outs_logger, &d, "%s", "");
 			return STF_INTERNAL_ERROR;
 		}
+
 		close_output_pbs(&ts_label_pbs);
 	}
 
@@ -285,9 +283,9 @@ static struct traffic_selector impair_ts_to_supernet(const struct traffic_select
 	struct traffic_selector ts_ret = *ts;
 
 	if (ts_ret.ts_type == IKEv2_TS_IPV4_ADDR_RANGE)
-		ts_ret.net = range_from_subnet(&ipv4_info.subnet.all);
+		ts_ret.net = range_from_subnet(ipv4_info.subnet.all);
 	else if (ts_ret.ts_type == IKEv2_TS_IPV6_ADDR_RANGE)
-		ts_ret.net = range_from_subnet(&ipv6_info.subnet.all);
+		ts_ret.net = range_from_subnet(ipv6_info.subnet.all);
 
 	ts_ret.net.is_subnet = true;
 
@@ -296,9 +294,7 @@ static struct traffic_selector impair_ts_to_supernet(const struct traffic_select
 	return ts_ret;
 }
 
-stf_status v2_emit_ts_payloads(const struct child_sa *child,
-			       pb_stream *outpbs,
-			       const struct connection *c0)
+stf_status emit_v2TS_payloads(struct pbs_out *outpbs, const struct child_sa *child)
 {
 	const struct traffic_selector *ts_i, *ts_r;
 	struct traffic_selector ts_i_impaired, ts_r_impaired;
@@ -313,7 +309,7 @@ stf_status v2_emit_ts_payloads(const struct child_sa *child,
 			ts_i_impaired =  impair_ts_to_supernet(ts_i);
 			ts_i = ts_r =  &ts_i_impaired; /* supernet TSi = TSr = 0/0 */
 			range_buf tsi_buf;
-                        range_buf tsr_buf;
+			range_buf tsr_buf;
 			dbg("rekey-initiate-supernet TSi and TSr set to %s %s",
 					str_range(&ts_i->net, &tsi_buf),
 					str_range(&ts_r->net, &tsr_buf));
@@ -354,7 +350,7 @@ stf_status v2_emit_ts_payloads(const struct child_sa *child,
 			ts_i_impaired =  impair_ts_to_supernet(ts_i);
 			ts_i = ts_r =  &ts_i_impaired; /* supernet TSi = TSr = 0/0 */
 			range_buf tsi_buf;
-                        range_buf tsr_buf;
+			range_buf tsr_buf;
 			dbg("rekey-respond-supernet TSi and TSr set to %s %s",
 					str_range(&ts_i->net, &tsi_buf),
 					str_range(&ts_r->net, &tsr_buf));
@@ -382,13 +378,13 @@ stf_status v2_emit_ts_payloads(const struct child_sa *child,
 	 *   payload after these
 	 */
 
-	for (const struct spd_route *sr = &c0->spd; sr != NULL;
+	for (const struct spd_route *sr = &child->sa.st_connection->spd; sr != NULL;
 	     sr = sr->spd_next) {
-		stf_status ret = ikev2_emit_ts(outpbs, &ikev2_ts_i_desc, ts_i, &child->sa);
+		stf_status ret = emit_v2TS(outpbs, &ikev2_ts_i_desc, ts_i);
 
 		if (ret != STF_OK)
 			return ret;
-		ret = ikev2_emit_ts(outpbs, &ikev2_ts_r_desc, ts_r, &child->sa);
+		ret = emit_v2TS(outpbs, &ikev2_ts_r_desc, ts_r);
 		if (ret != STF_OK)
 			return ret;
 	}
@@ -440,7 +436,7 @@ static bool v2_parse_ts(struct payload_digest *const ts_pd,
 			d = pbs_in_struct(&ts_body_pbs, &ikev2_ts_portrange_desc,
 				  &pr, sizeof(pr), NULL);
 			if (d != NULL) {
-				log_diag(RC_LOG, logger, &d, "%s", "");
+				llog_diag(RC_LOG, logger, &d, "%s", "");
 				return false;
 			}
 
@@ -467,22 +463,39 @@ static bool v2_parse_ts(struct payload_digest *const ts_pd,
 				bad_case(ts_h.isath_type); /* make compiler happy */
 			}
 
-
-			d = pbs_in_address(&ts_body_pbs, &ts->net.start, ipv, "TS IP start");
+			ip_address start;
+			d = pbs_in_address(&ts_body_pbs, &start, ipv, "TS IP start");
 			if (d != NULL) {
-				log_diag(RC_LOG, logger, &d, "%s", "");
+				llog_diag(RC_LOG, logger, &d, "%s", "");
 				return false;
 			}
 
-			d = pbs_in_address(&ts_body_pbs, &ts->net.end, ipv, "TS IP end");
+			ip_address end;
+			d = pbs_in_address(&ts_body_pbs, &end, ipv, "TS IP end");
 			if (d != NULL) {
-				log_diag(RC_LOG, logger, &d, "%s", "");
+				llog_diag(RC_LOG, logger, &d, "%s", "");
 				return false;
 			}
 
 			/* XXX: does this matter? */
 			if (pbs_left(&ts_body_pbs) != 0)
 				return false;
+
+			err_t err = addresses_to_nonzero_range(start, end, &ts->net);
+
+			/* pluto doesn't yet do full ranges; check for subnet */
+			ip_subnet ignore;
+			err = err == NULL ? range_to_subnet(ts->net, &ignore) : err;
+
+			if (err != NULL) {
+				address_buf sb, eb;
+				llog(RC_LOG, logger, "Traffic Selector range %s-%s invalid: %s",
+				     str_address_sensitive(&start, &sb),
+				     str_address_sensitive(&end, &eb),
+				     err);
+				return false;
+			}
+
 			ts->ts_type = ts_h.isath_type;
 			break;
 		}
@@ -726,7 +739,7 @@ static int score_address_range(const struct end *end,
 	 * Pre-compute possible fit --- sum of bits gives how good a
 	 * fit this is.
 	 */
-	int ts_range = range_significant_bits(&ts->net);
+	int ts_range = range_host_bits(ts->net);
 	int maskbits = end->client.maskbits;
 	int fitbits = maskbits + ts_range;
 
@@ -739,25 +752,20 @@ static int score_address_range(const struct end *end,
 	 *
 	 * XXX: so what is CIDR?
 	 */
-	ip_range range = selector_range(&end->client);
-	passert(addrcmp(&range.start, &range.end) <= 0);
-	passert(addrcmp(&ts->net.start, &ts->net.end) <= 0);
+	ip_range range = selector_range(end->client);
 	switch (fit) {
 	case END_EQUALS_TS:
-		if (addrcmp(&range.start, &ts->net.start) == 0 &&
-		    addrcmp(&range.end, &ts->net.end) == 0) {
+		if (range_eq_range(range, ts->net)) {
 			f = fitbits;
 		}
 		break;
 	case END_NARROWER_THAN_TS:
-		if (addrcmp(&range.start, &ts->net.start) >= 0 &&
-		    addrcmp(&range.end, &ts->net.end) <= 0) {
+		if (range_in_range(range, ts->net)) {
 			f = fitbits;
 		}
 		break;
 	case END_WIDER_THAN_TS:
-		if (addrcmp(&range.start, &ts->net.start) <= 0 &&
-		    addrcmp(&range.end, &ts->net.end) >= 0) {
+		if (range_in_range(ts->net, range)) {
 			f = fitbits;
 		}
 		break;
@@ -871,93 +879,82 @@ static bool score_gt(const struct best_score *score, const struct best_score *be
 }
 
 /*
- * Danger! this returns three types of value:
+ * Danger! score_ends_seclabel() returns three types of value:
  *
  * NULL: no sec_label was found and none was expected
  * &null_shunk: someting is wrong; skip
  * chunk: something was found
+ *
+ * Auxilliary function ts_has() returns similar results but NULL is excluded.
  */
+
+#ifdef HAVE_LABELED_IPSEC
+static const shunk_t *ts_has_seclabel(chunk_t sec_label,
+			const struct traffic_selectors *ts,
+			const char *what,
+			struct logger *logger)
+{
+	if (ts->contains_sec_label) {
+		for (unsigned i = 0; i < ts->nr; i++) {
+			const struct traffic_selector *s = &ts->ts[i];
+			if (s->ts_type != IKEv2_TS_SECLABEL) {
+				continue;
+			}
+
+			passert(vet_seclabel(s->sec_label) == NULL);
+
+			if (!sec_label_within_range(s->sec_label, sec_label, logger)) {
+				dbg("ikev2ts: received %s label not within range of our security label", what);
+				DBG_dump_hunk("wanted", sec_label);
+				DBG_dump_hunk("received", s->sec_label);
+				continue;
+			}
+
+			dbg("ikev2ts: received %s label within range of our security label", what);
+
+			/* XXX we return the first match.  Should we return the best? */
+			return &s->sec_label;	/* first match */
+		}
+	}
+	return &null_shunk;	/* unfound: error */
+}
+#endif
 
 static const shunk_t *score_ends_seclabel(const struct ends *ends /*POSSIBLY*/UNUSED,
 					  const struct connection *d,
 					  const struct traffic_selectors *tsi,
 					  const struct traffic_selectors *tsr,
-					  struct logger *logger)
+					  struct logger *logger
+#ifndef HAVE_LABELED_IPSEC
+								UNUSED
+#endif
+)
 {
 	/* sec_labels are symmetric, pick from one end */
 	chunk_t sec_label = d->spd.this.sec_label;
 
-	/* No sec_label was found and none was expected? */
-	if (sec_label.len == 0 &&
-	    !tsi->contains_sec_label &&
-	    !tsr->contains_sec_label) {
+	if (sec_label.len == 0) {
+		/* This endpoint is not configured to use labeled IPsec. */
+		if (tsi->contains_sec_label || tsr->contains_sec_label) {
+			dbg("error: received sec_label but this end is *not* configured to use sec_label");
+			return &null_shunk;
+		}
+		/* No sec_label was found and none was expected */
 		return NULL;	/* success: no label, as expected */
 	}
+
+	/* This endpoint is configured to use labeled IPsec. */
 
 #ifdef HAVE_LABELED_IPSEC
-
-	if (!tsi->contains_sec_label && !tsr->contains_sec_label) {
-		/*
-		 * if neither TSi nor TSr contains a label, that is OK.
-		 * This case is expected for the initial child/IPsec SA setup
-		 * during IKE_AUTH when there is no ACQUIRE driving said IKE
-		 * negotiation (i.e. when using `auto=start` for the connection
-		 * configuration).
-		 */
-		return NULL;	/* success: no label, as expected */
-	}
-
-	/* short-cut */
-	if (!tsi->contains_sec_label || !tsr->contains_sec_label) {
-		/*
-		 * if either TSi or TSr contains a label, then both are needed;
-		 * can't match
-		 */
-		return &null_shunk;	/* error */
-	}
-
 	passert(vet_seclabel(HUNK_AS_SHUNK(sec_label)) == NULL);
 
-	for (unsigned tsi_n = 0; tsi_n < tsi->nr; tsi_n++) {
-		const struct traffic_selector *cur_i = &tsi->ts[tsi_n];
-		if (cur_i->ts_type != IKEv2_TS_SECLABEL) {
-			continue;
-		}
-		passert(vet_seclabel(cur_i->sec_label) == NULL);
-		if (!se_label_match(cur_i->sec_label, sec_label, logger)) {
-			dbg("ikev2ts #1: received label not within range of our security label");
-			DBG_dump_hunk("ends->i->sec_label", ends->i->sec_label);
-			DBG_dump_hunk("cur_i->sec_label", cur_i->sec_label);
-			continue;
-		}
-
-		dbg("ikev2ts #1: received label within range of our security label");
-
-		for (unsigned tsr_n = 0; tsr_n < tsr->nr; tsr_n++) {
-			const struct traffic_selector *cur_r = &tsr->ts[tsr_n];
-			if (cur_r->ts_type != IKEv2_TS_SECLABEL) {
-				continue;
-			}
-			passert(vet_seclabel(cur_r->sec_label) == NULL);
-			if (!se_label_match(cur_r->sec_label, sec_label, logger)) {
-				dbg("ikev2ts #2: received label not within range of our security label");
-				DBG_dump_hunk("ends->r->sec_label", ends->r->sec_label);
-				DBG_dump_hunk("cur_r->sec_label", cur_r->sec_label);
-				continue;
-			}
-
-			dbg("ikev2ts #2: received label within range of our security label");
-
-			/*
-			 * ??? we return the responder label.
-			 * Could the initiator label be different?
-			 *
-			 * XXX we return the first match.  Should we return the best?
-			 */
-			return &cur_r->sec_label;	/* first match */
-		}
-		break;	/* no point in trying a different tsi_n */
+	if (!tsi->contains_sec_label || !tsr->contains_sec_label) {
+		dbg("error: connection requires sec_label but not received TSi/TSr with sec_label");
+		return &null_shunk;
 	}
+
+	if (ts_has_seclabel(sec_label, tsi, "initiator", logger) != &null_shunk)
+		return ts_has_seclabel(sec_label, tsr, "responder", logger);
 #endif
 
 	/* security label required but no matching one found */
@@ -1024,6 +1021,87 @@ static struct best_score score_ends_iprange(enum fit fit,
 	return best_score;
 }
 
+static struct connection *scribble_ts_on_connection(struct connection *t, struct child_sa *child,
+						    const struct traffic_selectors *tsip,
+						    const struct traffic_selectors *tsrp,
+						    enum fit fit, bool definitely_shared,
+						    /* could be NULL */
+						    const shunk_t *best_sec_label)
+{
+	passert(tsip->nr >= 1);
+	int tsi_port = narrow_port(&t->spd.that, tsip,
+				   fit, "TSi", 0);
+	if (tsi_port < 0) {
+		dbg("    skipping; TSi port too wide");
+		return NULL;
+	}
+
+	int tsi_protocol = narrow_protocol(&t->spd.that, tsip,
+					   fit, "TSi", 0);
+	if (tsi_protocol < 0) {
+		dbg("    skipping; TSi protocol too wide");
+		return NULL;
+	}
+
+	passert(tsrp->nr >= 1);
+	int tsr_port = narrow_port(&t->spd.this, tsrp,
+				   fit, "TRi", 0);
+	if (tsr_port < 0) {
+		dbg("    skipping; TSr port too wide");
+		return NULL;
+	}
+
+	int tsr_protocol = narrow_protocol(&t->spd.this, tsrp,
+					   fit, "TSr", 0);
+	if (tsr_protocol < 0) {
+		dbg("    skipping; TSr protocol too wide");
+		return NULL;
+	}
+
+	struct connection *c;
+	if (definitely_shared || v2_child_connection_probably_shared(child)) {
+		/* instantiate it, filling in peer's ID */
+		c = instantiate(t, &child->sa.st_connection->spd.that.host_addr, NULL);
+	} else {
+		c = child->sa.st_connection;
+	}
+
+	/* "this" == responder; see function name */
+	c->spd.this.port = tsr_port;
+	c->spd.that.port = tsi_port;
+	c->spd.this.protocol = tsr_protocol;
+	c->spd.that.protocol = tsi_protocol;
+	/* hack */
+	dbg("XXX: updating best connection's ports/protocols");
+	update_selector_hport(&c->spd.this.client, tsr_port);
+	update_selector_hport(&c->spd.that.client, tsi_port);
+	update_selector_ipproto(&c->spd.this.client, tsr_protocol);
+	update_selector_ipproto(&c->spd.that.client, tsi_protocol);
+
+	free_chunk_content(&c->spd.this.sec_label);
+	free_chunk_content(&c->spd.that.sec_label);
+	if (best_sec_label != NULL) {
+		connection_buf tb;
+		dbg("responder storing sec_label="PRI_SHUNK" in "PRI_CONNECTION,
+		    pri_shunk(*best_sec_label), pri_connection(c, &tb));
+		c->spd.this.sec_label = clone_hunk(*best_sec_label, "this_sec_label");
+		c->spd.that.sec_label = clone_hunk(*best_sec_label, "that_sec_label");
+	}
+
+	if (c != child->sa.st_connection) {
+		connection_buf from, to;
+		dbg("  switching #%lu from "PRI_CONNECTION" to just-instantiated "PRI_CONNECTION,
+		    child->sa.st_serialno,
+		    pri_connection(child->sa.st_connection, &from),
+		    pri_connection(c, &to));
+	} else {
+		connection_buf cib;
+		dbg("  overwrote #%lu connection "PRI_CONNECTION,
+		    child->sa.st_serialno, pri_connection(c, &cib));
+	}
+	return c;
+}
+
 /*
  * find the best connection and, if it is AUTH exchange, create the
  * child state
@@ -1035,18 +1113,7 @@ bool v2_process_ts_request(struct child_sa *child,
 {
 	passert(v2_msg_role(md) == MESSAGE_REQUEST);
 	passert(child->sa.st_sa_role == SA_RESPONDER);
-
-	/*
-	 * XXX: md->st here is parent????  Lets find out.
-	 */
-	if (md->st == &child->sa) {
-		dbg("Child SA TS Request has child->sa == md->st; so using child connection");
-	} else if (md->st == &ike_sa(&child->sa, HERE)->sa) {
-		dbg("Child SA TS Request has ike->sa == md->st; so using parent connection");
-	} else {
-		dbg("Child SA TS Request has an unknown md->st; so using unknown connection");
-	}
-	struct connection *c = md->st->st_connection;
+	struct connection *c = child->sa.st_connection;
 
 	struct traffic_selectors tsi = { .nr = 0, };
 	struct traffic_selectors tsr = { .nr = 0, };
@@ -1062,7 +1129,9 @@ bool v2_process_ts_request(struct child_sa *child,
 
 	/* find best spd in c */
 
-	dbg("looking for best SPD in current connection");
+	connection_buf ccb;
+	dbg("responder looking for best SPD in current connection "PRI_CONNECTION,
+	    pri_connection(c, &ccb));
 	for (const struct spd_route *sra = &c->spd; sra != NULL; sra = sra->spd_next) {
 
 		/* responder */
@@ -1071,7 +1140,7 @@ bool v2_process_ts_request(struct child_sa *child,
 			.r = &sra->this,
 		};
 
-		/* Returns NULL(ok), &empty_chunk(error), memory(ok). */
+		/* Returns NULL(ok), &null_shun(error), memory(ok). */
 		shunk_t const *const selected_sec_label =
 			score_ends_seclabel(&ends, c, &tsi, &tsr, child->sa.st_logger);
 		if (selected_sec_label == &null_shunk) {
@@ -1116,30 +1185,31 @@ bool v2_process_ts_request(struct child_sa *child,
 	 */
 
 	dbg("looking for better host pair");
-	const struct host_pair *hp = NULL;
-	for (const struct spd_route *sra = &c->spd;
-	     hp == NULL && sra != NULL; sra = sra->spd_next) {
-		hp = find_host_pair(&sra->this.host_addr,
-				    &sra->that.host_addr);
 
-		if (DBGP(DBG_BASE)) {
-			selector_buf s2;
-			selector_buf d2;
-			DBG_log("  checking hostpair %s -> %s is %s",
-				str_selector(&sra->this.client, &s2),
-				str_selector(&sra->that.client, &d2),
-				hp == NULL ? "not found" : "found");
-		}
+	const ip_address local = md->iface->ip_dev->id_address;
+	FOR_EACH_THING(remote, endpoint_address(md->sender), unset_address) {
 
-		if (hp == NULL)
-			continue;
+		FOR_EACH_HOST_PAIR_CONNECTION(local, remote, d) {
 
-		for (struct connection *d = hp->connections;
-		     d != NULL; d = d->hp_next) {
 			/* groups are templates instantiated as GROUPINSTANCE */
 			if (d->policy & POLICY_GROUP) {
 				continue;
 			}
+
+			/*
+			 * For labeled IPsec, always start with the
+			 * template.  Who are we to argue if the
+			 * kernel asks for a new SA with, seemingly, a
+			 * security label that matches an existing
+			 * connection instance.
+			 */
+			if (c->ike_version == IKEv2 && c->spd.this.sec_label.len > 0 && c->kind != CK_TEMPLATE) {
+				connection_buf cb;
+				dbg("skipping non-template IKEv2 "PRI_CONNECTION" with a security label",
+				    pri_connection(c, &cb));
+				continue;
+			}
+
 			dbg("  investigating connection \"%s\" as a better match", d->name);
 
 			/*
@@ -1182,7 +1252,7 @@ bool v2_process_ts_request(struct child_sa *child,
 					? END_NARROWER_THAN_TS
 					: END_EQUALS_TS;
 
-				/* Returns NULL(ok), &empty_chunk(skip), memory(ok). */
+				/* Returns NULL(ok), &null_shunk(skip), memory(ok). */
 				shunk_t const *const selected_sec_label =
 					score_ends_seclabel(&ends, d, &tsi, &tsr, child->sa.st_logger);
 				if (selected_sec_label == &null_shunk) {
@@ -1249,12 +1319,16 @@ bool v2_process_ts_request(struct child_sa *child,
 		 * something that should not be done to a permanent
 		 * connection.
 		 */
-		pexpect(c->kind == CK_PERMANENT);
-		dbg("no best spd route; but the current %s connection \"%s\" is not a CK_INSTANCE",
+		pexpect((c->kind == CK_PERMANENT) ||
+			(c->kind == CK_TEMPLATE && c->spd.this.sec_label.len > 0));
+		dbg("no best spd route; but the current %s connection \"%s\" is not a CK_INSTANCE; giving up",
 		    enum_name(&connection_kind_names, c->kind), c->name);
-	} else if (best_spd_route == NULL &&
-		   ((c->policy & POLICY_GROUPINSTANCE) ||
-		    c->policy & POLICY_IKEV2_ALLOW_NARROWING)) {
+		llog_sa(RC_LOG_SERIOUS, child, "No IKEv2 connection found with compatible Traffic Selectors");
+		return false;
+	}
+
+	if (best_spd_route == NULL && ((c->policy & POLICY_GROUPINSTANCE) ||
+				       (c->policy & POLICY_IKEV2_ALLOW_NARROWING))) {
 		/*
 		 * Is there something better than the current
 		 * connection?
@@ -1323,14 +1397,14 @@ bool v2_process_ts_request(struct child_sa *child,
 			}
 
 			/* require initiator's subnet <= T; why? */
-			if (!selector_in_selector(&c->spd.that.client, &t->spd.that.client)) {
+			if (!selector_in_selector(c->spd.that.client, t->spd.that.client)) {
 				dbg("    skipping; current connection's initiator subnet is not <= template");
 				continue;
 			}
 			/* require responder address match; why? */
-			ip_address c_this_client_address = selector_prefix(&c->spd.this.client);
-			ip_address t_this_client_address = selector_prefix(&t->spd.this.client);
-			if (!address_eq(&c_this_client_address, &t_this_client_address)) {
+			ip_address c_this_client_address = selector_prefix(c->spd.this.client);
+			ip_address t_this_client_address = selector_prefix(t->spd.this.client);
+			if (!address_eq_address(c_this_client_address, t_this_client_address)) {
 				dbg("    skipping; responder addresses don't match");
 				continue;
 			}
@@ -1352,68 +1426,35 @@ bool v2_process_ts_request(struct child_sa *child,
 				bad_case(c->policy);
 			}
 
-			passert(tsi.nr >= 1);
-			int tsi_port = narrow_port(&t->spd.that, &tsi,
-						   fit, "TSi", 0);
-			if (tsi_port < 0) {
-				dbg("    skipping; TSi port too wide");
-				continue;
-			}
-			int tsi_protocol = narrow_protocol(&t->spd.that, &tsi,
-							   fit, "TSi", 0);
-			if (tsi_protocol < 0) {
-				dbg("    skipping; TSi protocol too wide");
-				continue;
-			}
-
-			passert(tsr.nr >= 1);
-			int tsr_port = narrow_port(&t->spd.this, &tsr,
-						   fit, "TRi", 0);
-			if (tsr_port < 0) {
-				dbg("    skipping; TSr port too wide");
-				continue;
-			}
-			int tsr_protocol = narrow_protocol(&t->spd.this, &tsr,
-							   fit, "TSr", 0);
-			if (tsr_protocol < 0) {
-				dbg("    skipping; TSr protocol too wide");
-				continue;
-			}
-
 			passert(best_connection == c); /* aka st->st_connection, no leak */
-
-			bool shared = v2_child_connection_probably_shared(child);
-			if (shared) {
-				/* instantiate it, filling in peer's ID */
-				best_connection = instantiate(t, &c->spd.that.host_addr,
-							      NULL);
+			pexpect(best_connection == child->sa.st_connection);
+			struct connection *s = scribble_ts_on_connection(t, child, &tsi, &tsr, fit,
+									 /*definitely_shared?*/false,
+									 best_sec_label);
+			if (s == NULL) {
+				continue;
 			}
 
-			/* "this" == responder; see function name */
-			best_connection->spd.this.port = tsr_port;
-			best_connection->spd.that.port = tsi_port;
-			best_connection->spd.this.protocol = tsr_protocol;
-			best_connection->spd.that.protocol = tsi_protocol;
-			/* hack */
-			dbg("XXX: updating best connection's ports/protocols");
-			update_selector_hport(&best_connection->spd.this.client, tsr_port);
-			update_selector_hport(&best_connection->spd.that.client, tsi_port);
-			update_selector_ipproto(&best_connection->spd.this.client, tsr_protocol);
-			update_selector_ipproto(&best_connection->spd.that.client, tsi_protocol);
+			best_connection = s;
 			/* switch */
 			best_spd_route = &best_connection->spd;
-
-			if (shared) {
-				connection_buf from, to;
-				dbg("switching from "PRI_CONNECTION" to "PRI_CONNECTION,
-				    pri_connection(c, &from), pri_connection(best_connection, &to));
-			} else {
-				connection_buf cib;
-				dbg("  overwrote connection with instance "PRI_CONNECTION,
-				    pri_connection(best_connection, &cib));
-			}
 			break;
 		}
+	} else if (best_connection == c &&
+		   c->kind == CK_TEMPLATE &&
+		   c->spd.this.sec_label.len > 0) {
+		dbg("  instantiating template security label connection");
+		/* sure looks like a sec-label template */
+		struct connection *s = scribble_ts_on_connection(c, child, &tsi, &tsr,
+								 END_WIDER_THAN_TS,
+								 /*definitely_shared?*/true,
+								 best_sec_label);
+		if (!pexpect(s != NULL)) {
+			return false;
+		}
+		best_connection = s;
+		/* switch */
+		best_spd_route = &best_connection->spd;
 	}
 
 	if (best_spd_route == NULL) {
@@ -1438,13 +1479,8 @@ bool v2_process_ts_request(struct child_sa *child,
 	 */
 	update_state_connection(&child->sa, best_connection);
 
-	if (best_sec_label != NULL) {
-		free_chunk_content(&child->sa.st_seen_sec_label);
-		child->sa.st_seen_sec_label = clone_hunk(*best_sec_label, "st_seen_sec_label");
-	}
-
-	child->sa.st_ts_this = ikev2_end_to_ts(&best_spd_route->this, &child->sa);
-	child->sa.st_ts_that = ikev2_end_to_ts(&best_spd_route->that, &child->sa);
+	child->sa.st_ts_this = traffic_selector_from_end(&best_spd_route->this);
+	child->sa.st_ts_that = traffic_selector_from_end(&best_spd_route->that);
 
 	ikev2_print_ts(&child->sa.st_ts_this);
 	ikev2_print_ts(&child->sa.st_ts_that);
@@ -1478,7 +1514,7 @@ bool v2_process_ts_response(struct child_sa *child,
 		? END_WIDER_THAN_TS
 		: END_EQUALS_TS;
 
-	/* Returns NULL(ok), &empty_chunk(skip), memory(ok). */
+	/* Returns NULL(ok), &null_shunk(skip), memory(ok). */
 	shunk_t const *const selected_sec_label =
 		score_ends_seclabel(&e, c, &tsi, &tsr, child->sa.st_logger);
 	if (selected_sec_label == &null_shunk) {
@@ -1500,16 +1536,26 @@ bool v2_process_ts_response(struct child_sa *child,
 	}
 
 	if (selected_sec_label != NULL) {
-		free_chunk_content(&child->sa.st_seen_sec_label);
-		child->sa.st_seen_sec_label = clone_hunk(*selected_sec_label, "st_seen_sec_label");
+		if (hunk_eq(*selected_sec_label, c->spd.this.sec_label)) {
+			connection_buf cb;
+			dbg("responder returned same sec_label="PRI_SHUNK" as "PRI_CONNECTION,
+			    pri_shunk(*selected_sec_label),
+			    pri_connection(c, &cb));
+		} else {
+			connection_buf cb;
+			llog_sa(RC_LOG_SERIOUS, child,
+				"responder narrowed "PRI_CONNECTION" sec_label '"PRI_SHUNK"' down to '"PRI_SHUNK"'; what am I to do",
+				pri_connection(c, &cb), pri_shunk(c->spd.this.sec_label),
+				pri_shunk(*selected_sec_label));
+		}
 	}
 
 	/* XXX: check conversions */
 	dbg("initiator saving acceptable TSi response in this");
-	ts_to_end(best.tsi, &c->spd.this, &child->sa.st_ts_this);
+	traffic_selector_to_end(best.tsi, &c->spd.this, &child->sa.st_ts_this);
 
 	dbg("initiator saving acceptable TSr response in that");
-	ts_to_end(best.tsr, &c->spd.that, &child->sa.st_ts_that);
+	traffic_selector_to_end(best.tsr, &c->spd.that, &child->sa.st_ts_that);
 
 	return true;
 }
@@ -1558,7 +1604,7 @@ bool child_rekey_responder_ts_verify(struct child_sa *child, struct msg_digest *
 
 	enum fit fitness = END_NARROWER_THAN_TS;
 
-	/* Returns NULL(ok), &empty_chunk(skip), memory(ok). */
+	/* Returns NULL(ok), &null_shunk(skip), memory(ok). */
 	shunk_t const *const selected_sec_label =
 		score_ends_seclabel(&ends, c, &their_tsis, &their_tsrs, child->sa.st_logger);
 	if (selected_sec_label == &null_shunk) {

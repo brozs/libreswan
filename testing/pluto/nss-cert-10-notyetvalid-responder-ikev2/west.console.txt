@@ -6,7 +6,7 @@ west #
  ipsec start
 Redirecting to: [initsystem]
 west #
- /testing/pluto/bin/wait-until-pluto-started
+ ../../guestbin/wait-until-pluto-started
 west #
  ipsec auto --add nss-cert
 002 "nss-cert": added IKEv2 connection
@@ -27,7 +27,10 @@ west #
 003 "nss-cert" #1: certificate E=user-notyetvalid@testing.libreswan.org,CN=notyetvalid.testing.libreswan.org,OU=Test Department,O=Libreswan,L=Toronto,ST=Ontario,C=CA failed IPsec verification
 003 "nss-cert" #1: NSS ERROR: Peer's Certificate has expired.
 002 "nss-cert" #1: X509: certificate payload rejected for this connection
-036 "nss-cert" #2: encountered fatal error in state STATE_PARENT_I2
+036 "nss-cert" #1: encountered fatal error in state STATE_PARENT_I2
+002 "nss-cert" #1: deleting other state #2 (STATE_V2_IKE_AUTH_CHILD_I0) and NOT sending notification
+002 "nss-cert" #1: deleting state (STATE_PARENT_I2) and NOT sending notification
+002 "nss-cert" #1: IMPAIR: skipping revival of connection that is supposed to remain up
 west #
  echo done
 done
@@ -36,9 +39,5 @@ west #
 west #
  grep "certificate payload rejected" /tmp/pluto.log
 "nss-cert" #1: X509: certificate payload rejected for this connection
-west #
- ../bin/check-for-core.sh
-west #
- if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
 west #
  

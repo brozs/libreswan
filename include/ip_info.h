@@ -8,12 +8,13 @@
 #include "ip_address.h"
 #include "ip_subnet.h"
 #include "ip_selector.h"
+#include "ip_sockaddr.h"
 
 struct ip_info {
 	/*
 	 * address family
 	 */
-	unsigned ip_version; /* 4 or 6 */
+	enum ip_version ip_version; /* 4 or 6 */
 	const char *ip_name; /* "IPv4" or "IPv6" */
 	size_t ip_size; /* 4 or 16 */
 	unsigned mask_cnt; /* 32 or 128 */
@@ -27,24 +28,20 @@ struct ip_info {
 	} address;
 
 	/*
-	 * ip_endpoint
-	 */
-	struct {
-		const ip_endpoint any;		/* 0.0.0.0:0 or [::]:0 */
-	} endpoint;
-
-	/*
 	 * ip_subnet.
-	 *
-	 * none: the unspecified address - matches no addresses
-	 * all: the default route - matches all addresses
-	 *
-	 * (if nothing else, used for edge case testing)
 	 */
 	struct {
-		const ip_subnet none;		/* ::/128 or 0.0.0.0/32 */
+		const ip_subnet zero;		/* ::/128 or 0.0.0.0/32 */
 		const ip_subnet all;		/* ::/0 or 0.0.0.0/0 */
 	} subnet;
+
+	/*
+	 * ip_range.
+	 */
+	struct {
+		const ip_range zero;
+		const ip_range all;
+	} range;
 
 	/*
 	 * ip_selector
@@ -56,7 +53,7 @@ struct ip_info {
 	 */
 	struct {
 		/* matches no addresses */
-		const ip_selector none;		/* ::/128 or 0.0.0.0/32 */
+		const ip_selector zero;		/* ::/128 or 0.0.0.0/32 */
 		/* matches all addresses */
 		const ip_selector all;		/* ::/0 or 0.0.0.0/0 */
 	} selector;
@@ -74,6 +71,13 @@ struct ip_info {
 	int af; /* AF_INET or AF_INET6 */
 	const char *af_name;
 	size_t sockaddr_size; /* sizeof(sockaddr_in) | sizeof(sockaddr_in6)? */
+	ip_address (*address_from_sockaddr)(const ip_sockaddr sa);
+	ip_port (*port_from_sockaddr)(const ip_sockaddr sa);
+
+	/*
+	 * IKEv2 Traffic Selector Stuff.
+	 */
+	enum ikev2_ts_type ikev2_ts_addr_range_type;
 
 	/*
 	 * ID stuff.

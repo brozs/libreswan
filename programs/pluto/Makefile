@@ -56,11 +56,21 @@ endif
 
 OBJS += unpack.o
 OBJS += impair_message.o
+# exchanges
+OBJS += ikev2_ike_sa_init.o
+OBJS += ikev2_ike_intermediate.o
+OBJS += ikev2_ike_auth.o
+OBJS += ikev2_create_child_sa.o
+OBJS += ikev2_informational.o
+# payloads
 OBJS += ikev2_notify.o
+OBJS += ikev2_cp.o
+OBJS += ikev2_ts.o
+OBJS += ikev2_peer_id.o
+OBJS += ikev2_mobike.o
 OBJS += ikev2_send.o
 OBJS += ikev2_message.o
 OBJS += ikev2_cookie.o
-OBJS += ikev2_ts.o
 OBJS += ikev2_msgid.o
 OBJS += ikev2_auth.o
 OBJS += ikev2_auth_helper.o
@@ -121,9 +131,8 @@ OBJS += pam_conv.o
 endif
 USERLAND_LDFLAGS += $(AUTHPAM_LDFLAGS)
 
-
 # LABELED IPSEC support - requires SElinux
-OBJS += security_selinux.o
+OBJS += labeled_ipsec.o
 ifeq ($(USE_LABELED_IPSEC),true)
 USERLAND_LDFLAGS += -lselinux
 endif
@@ -186,6 +195,7 @@ OBJS += pending.o crypto.o defs.o
 OBJS += ike_spi.o
 OBJS += foodgroups.o log.o state.o plutomain.o plutoalg.o
 OBJS += revival.o
+OBJS += orient.o
 OBJS += server.o
 OBJS += server_fork.o
 OBJS += server_pool.o
@@ -193,8 +203,10 @@ OBJS += iface.o
 OBJS += iface_udp.o
 OBJS += iface_tcp.o
 OBJS += hash_table.o list_entry.o
-OBJS += timer.o hostpair.o
-OBJS += retry.o
+OBJS += timer.o
+OBJS += host_pair.o ikev1_host_pair.o ikev2_host_pair.o
+OBJS += ikev1_retry.o
+OBJS += ikev2_retry.o
 OBJS += ipsec_doi.o
 ifeq ($(USE_DNSSEC),true)
 OBJS += ikev2_ipseckey.o

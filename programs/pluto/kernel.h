@@ -38,7 +38,7 @@ struct show;
 extern bool can_do_IPcomp;  /* can system actually perform IPCOMP? */
 
 /*
- * Declare eroute things early enough for uses.
+ * Declare policy things early enough for uses.
  * Some of these things, while they seem like they are KLIPS-only, the
  * definitions are in fact needed by all kernel interfaces at this time.
  *
@@ -48,39 +48,71 @@ extern bool can_do_IPcomp;  /* can system actually perform IPCOMP? */
  * limited to appropriate source and destination addresses.
  */
 
-#define IPSEC_PROTO_ANY 255
-
-enum pluto_sadb_operations {
-	ERO_ADD=1,
-	ERO_REPLACE=2,
-	ERO_DELETE=3,
-	ERO_ADD_INBOUND=4,
-	ERO_REPLACE_INBOUND=5,
-	ERO_DEL_INBOUND=6
+enum kernel_policy_op {
+	KP_ADD_OUTBOUND = 1,
+	KP_REPLACE_OUTBOUND = 2,
+	KP_DELETE_OUTBOUND = 3,
+	KP_ADD_INBOUND = 4,
+	KP_REPLACE_INBOUND = 5,
+	KP_DELETE_INBOUND = 6
 };
 
-#define IPSEC_PROTO_ANY         255
+extern const struct enum_names kernel_policy_op_names;
 
-/* KLIPS has:
- * #define ERO_DELETE	SADB_X_DELFLOW
- * #define ERO_ADD	SADB_X_ADDFLOW
- * #define ERO_REPLACE	(SADB_X_ADDFLOW | (SADB_X_SAFLAGS_REPLACEFLOW << ERO_FLAG_SHIFT))
- * #define ERO_ADD_INBOUND	(SADB_X_ADDFLOW | (SADB_X_SAFLAGS_INFLOW << ERO_FLAG_SHIFT))
- * #define ERO_DEL_INBOUND	(SADB_X_DELFLOW | (SADB_X_SAFLAGS_INFLOW << ERO_FLAG_SHIFT))
+/*
+ * The protocol used to encapsulate.
+ *
+ * Since ip-xfrm(8) lists esp, ah, comp, route2, hao and setkey(8)
+ * lists ah, esp, ipcomp.
+ *
+ * XXX: The numbers end up being fed into the kernel so need to match
+ * IETF equivalents.
+ *
+ * XXX: eroute_type includes ET_INT and ET_IPIP but in this context
+ * the're not valid.  Hence the separate enum to enforce their
+ * exclusion.  Suspect eroute_type can be chopped.
  */
 
-struct pfkey_proto_info {
-	int proto;
-	int mode;
+enum encap_proto {
+	ENCAP_PROTO_UNSPEC = 0,
+	ENCAP_PROTO_ESP = 50,		/* (50)  encryption/auth */
+	ENCAP_PROTO_AH = 51,		/* (51)  authentication */
+	ENCAP_PROTO_IPCOMP= 108,	/* (108) compression */
+};
+
+/*
+ * Encapsulation rules.
+ *
+ * These determine how a packet matching a policy should be
+ * encapsulated (processed).  The rules are ordered inner-most to
+ * outer-most (there's an implied -1 rule matching the actual packet).
+ *
+ * setkey(8) uses the term "rule" when refering to the tupple
+ * protocol/mode/src-dst/level while ip-xfrm(8) uses TMPL to describe
+ * something far more complex.
+ *
+ * XXX: this may well need to eventually include things like the
+ * addresses; spi; ...?
+ */
+
+struct encap_rule {
+	enum encap_proto proto;
 	reqid_t reqid;
 };
 
-extern const struct pfkey_proto_info null_proto_info[2];
+struct encap_rules {
+	bool tunnel;
+	int outer; /* -1 when no rules; XXX: good idea? */
+	struct encap_rule rule[4]; /* AH+ESP+COMP+0 */
+};
 
-struct sadb_msg;
+#define pfkey_proto_info encap_rule
+extern const struct encap_rules esp_transport_encap_rules;
+#define esp_transport_proto_info &esp_transport_encap_rules /* XXX: TBD */
 
 /*
- * replaces SADB_X_SATYPE_* for non-KLIPS code. Assumes normal SADB_SATYPE values
+ * Replaces SADB_X_SATYPE_* for non-KLIPS code. Assumes normal
+ * SADB_SATYPE values
  *
  * XXX: Seems largely redundant.  Only place that eroute and
  * ip_protocol have different "values" is when netkey is inserting a
@@ -129,7 +161,7 @@ struct kernel_sa {
 	struct kernel_end dst;
 
 	bool inbound;
-	int  xfrm_dir;			/* xfrm has 3, in,out & fwd */
+	int xfrm_dir;			/* xfrm has 3, in,out & fwd */
 	bool add_selector;
 	bool esn;
 	bool decap_dscp;
@@ -141,8 +173,6 @@ struct kernel_sa {
 	enum eroute_type esatype;
 	unsigned replay_window;
 	reqid_t reqid;
-
-	unsigned authalg; /* use INTEG */
 
 	const struct integ_desc *integ;
 	unsigned authkeylen;
@@ -186,12 +216,6 @@ struct raw_iface {
 
 extern char *pluto_listen;	/* from --listen flag */
 
-
-/* KAME has a different name for AES */
-#if !defined(SADB_X_EALG_AESCBC) && defined(SADB_X_EALG_AES)
-#define SADB_X_EALG_AESCBC SADB_X_EALG_AES
-#endif
-
 struct kernel_ops {
 	enum kernel_interface type;
 	const char *kern_name;
@@ -206,7 +230,8 @@ struct kernel_ops {
 	void (*pfkey_register)(void);
 	void (*process_queue)(void);
 	void (*process_msg)(int, struct logger *);
-	bool (*raw_eroute)(const ip_address *this_host,
+	bool (*raw_policy)(enum kernel_policy_op op,
+			   const ip_address *this_host,
 			   const ip_selector *this_client,
 			   const ip_address *that_host,
 			   const ip_selector *that_client,
@@ -215,27 +240,20 @@ struct kernel_ops {
 			   const struct ip_protocol *sa_proto,
 			   unsigned int transport_proto,
 			   enum eroute_type satype,
-			   const struct pfkey_proto_info *proto_info,
+			   const struct encap_rules *encap,
 			   deltatime_t use_lifetime,
 			   uint32_t sa_priority,
 			   const struct sa_marks *sa_marks,
 			   const uint32_t xfrm_if_id,
-			   enum pluto_sadb_operations op,
-			   const char *text_said,
-			   const chunk_t *sec_label,
+			   const shunk_t sec_label,
 			   struct logger *logger);
-	bool (*shunt_eroute)(const struct connection *c,
+	bool (*shunt_policy)(enum kernel_policy_op op,
+			     const struct connection *c,
 			     const struct spd_route *sr,
 			     enum routing_t rt_kind,
-			     enum pluto_sadb_operations op,
 			     const char *opname,
 			     struct logger *logger);
-	bool (*sag_eroute)(const struct state *st, const struct spd_route *sr,
-			   enum pluto_sadb_operations op, const char *opname);
 	bool (*eroute_idle)(struct state *st, deltatime_t idle_max);	/* may mutate *st */
-	void (*remove_orphaned_holds)(int transportproto,
-				      const ip_selector *ours,
-				      const ip_selector *peers);
 	bool (*add_sa)(const struct kernel_sa *sa,
 		       bool replace,
 		       struct logger *logger);
@@ -252,8 +270,7 @@ struct kernel_ops {
 			       const struct ip_protocol *proto,
 			       bool tunnel_mode,
 			       reqid_t reqid,
-			       ipsec_spi_t min,
-			       ipsec_spi_t max,
+			       uintmax_t min, uintmax_t max,
 			       const char *text_said,
 			       struct logger *logger);
 	void (*process_raw_ifaces)(struct raw_iface *rifaces, struct logger *logger);
@@ -344,16 +361,6 @@ struct bare_shunt **bare_shunt_ptr(const ip_selector *ours,
 # define EM_MAXRELSPIS 4        /* AH ESP IPCOMP IPIP */
 #endif
 
-/*
- * Note: "why" must be in stable storage (not auto, not heap)
- * because we use it indefinitely without copying or pfreeing.
- * Simple rule: use a string literal.
- */
-struct xfrm_user_sec_ctx_ike; /* forward declaration of tag */
-extern void record_and_initiate_opportunistic(const ip_endpoint *our_client,
-					      const ip_endpoint *peer_client,
-					      const chunk_t sec_label,
-					      const char *why);
 extern void init_kernel(struct logger *logger);
 
 struct connection;      /* forward declaration of tag */
@@ -364,16 +371,8 @@ extern void migration_down(struct connection *c,  struct state *st);
 
 extern bool delete_bare_shunt(const ip_address *src, const ip_address *dst,
 			      int transport_proto, ipsec_spi_t shunt_spi,
-			      bool skip_xfrm_raw_eroute_delete,
+			      bool skip_xfrm_policy_delete,
 			      const char *why, struct logger *logger);
-
-extern bool replace_bare_shunt(const ip_address *src, const ip_address *dst,
-			       policy_prio_t policy_prio,
-			       ipsec_spi_t cur_shunt_spi,   /* in host order! */
-			       ipsec_spi_t new_shunt_spi,   /* in host order! */
-			       int transport_proto,
-			       const char *why,
-			       struct logger *logger);
 
 extern bool assign_holdpass(const struct connection *c,
 			struct spd_route *sr,
@@ -385,7 +384,7 @@ extern bool orphan_holdpass(const struct connection *c, struct spd_route *sr,
 			    int transport_proto, ipsec_spi_t failure_shunt,
 			    struct logger *logger);
 
-extern ipsec_spi_t shunt_policy_spi(const struct connection *c, bool prospective);
+extern enum policy_spi shunt_policy_spi(const struct connection *c, bool prospective);
 
 struct state;   /* forward declaration of tag */
 extern ipsec_spi_t get_ipsec_spi(ipsec_spi_t avoid,
@@ -399,11 +398,6 @@ extern ipsec_spi_t get_my_cpi(const struct spd_route *sr, bool tunnel_mode,
 extern bool install_inbound_ipsec_sa(struct state *st);
 extern bool install_ipsec_sa(struct state *st, bool inbound_also);
 extern void delete_ipsec_sa(struct state *st);
-extern bool route_and_eroute(struct connection *c,
-			     struct spd_route *sr,
-			     struct state *st,
-			     /* st or c */
-			     struct logger *logger);
 
 extern bool was_eroute_idle(struct state *st, deltatime_t idle_max);
 extern bool get_sa_info(struct state *st, bool inbound, deltatime_t *ago /* OUTPUT */);
@@ -419,7 +413,7 @@ extern bool eroute_connection(const struct spd_route *sr,
 			      ipsec_spi_t new_spi,
 			      const struct ip_protocol *proto,
 			      enum eroute_type esatype,
-			      const struct pfkey_proto_info *proto_info,
+			      const struct encap_rules *encap,
 			      uint32_t sa_priority,
 			      const struct sa_marks *sa_marks,
 			      const uint32_t xfrm_if_id,
@@ -444,10 +438,15 @@ void shutdown_kernel(struct logger *logger);
  */
 extern void add_bare_shunt(const ip_selector *ours, const ip_selector *peers,
 			   int transport_proto, ipsec_spi_t shunt_spi,
-			   const char *why);
+			   const char *why, struct logger *logger);
 
-// TEMPORARY
-extern bool raw_eroute(const ip_address *this_host,
+bool install_se_connection_policies(struct connection *c, struct logger *logger);
+
+/*
+ * should raw-eroute be dumped?
+ */
+extern bool raw_policy(enum kernel_policy_op op,
+		       const ip_address *this_host,
 		       const ip_selector *this_client,
 		       const ip_address *that_host,
 		       const ip_selector *that_client,
@@ -456,15 +455,21 @@ extern bool raw_eroute(const ip_address *this_host,
 		       const struct ip_protocol *sa_proto,
 		       unsigned int transport_proto,
 		       enum eroute_type esatype,
-		       const struct pfkey_proto_info *proto_info,
+		       const struct encap_rules *encap,
 		       deltatime_t use_lifetime,
 		       uint32_t sa_priority,
 		       const struct sa_marks *sa_marks,
 		       const uint32_t xfrm_if_id,
-		       enum pluto_sadb_operations op,
-		       const char *opname,
-		       const chunk_t *sec_label,
-		       struct logger *logger);
+		       const shunk_t sec_label,
+		       struct logger *logger,
+		       const char *fmt, ...) PRINTF_LIKE(18);
+
+bool shunt_policy(enum kernel_policy_op op,
+		  const struct connection *c,
+		  const struct spd_route *sr,
+		  enum routing_t rt_kind,
+		  const char *what,
+		  struct logger *logger);
 
 extern deltatime_t bare_shunt_interval;
 extern void set_text_said(char *text_said, const ip_address *dst,

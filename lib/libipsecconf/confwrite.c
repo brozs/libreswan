@@ -179,7 +179,7 @@ static void confwrite_int(FILE *out,
 }
 
 static void confwrite_str(FILE *out,
-		   char   *side,
+		   char *side,
 		   unsigned int context,
 		   ksf strings,
 		   str_set strings_set)
@@ -256,7 +256,7 @@ static void confwrite_str(FILE *out,
 
 static void confwrite_side(FILE *out,
 		    struct starter_end *end,
-		    char   *side)
+		    char *side)
 {
 	switch (end->addrtype) {
 	case KH_NOTSET:
@@ -332,21 +332,20 @@ static void confwrite_side(FILE *out,
 	}
 
 	if (end->has_client) {
-		if (!subnetishost(&end->subnet) ||
-		     !addrinsubnet(&end->addr, &end->subnet)) {
+		if (!subnet_eq_address(end->subnet, end->addr)) {
 			subnet_buf as;
 			fprintf(out, "\t%ssubnet=%s\n", side,
 				str_subnet(&end->subnet, &as));
 		}
 	}
 
-	if (cidr_is_specified(&end->vti_ip)) {
+	if (cidr_is_specified(end->vti_ip)) {
 		cidr_buf as;
 		fprintf(out, "\t%svti=%s\n", side,
 			str_cidr(&end->vti_ip, &as));
 	}
 
-	if (cidr_is_specified(&end->ifaceip)) {
+	if (cidr_is_specified(end->ifaceip)) {
 		cidr_buf as;
 		fprintf(out, "\t%sinterface-ip=%s\n", side,
 			str_cidr(&end->ifaceip, &as));
@@ -364,7 +363,7 @@ static void confwrite_side(FILE *out,
 	if (end->certx != NULL)
 		fprintf(out, "\t%scert=%s\n", side, end->certx);
 
-	if (address_is_specified(&end->sourceip)) {
+	if (address_is_specified(end->sourceip)) {
 		ipstr_buf as;
 
 		fprintf(out, "\t%ssourceip=%s\n",

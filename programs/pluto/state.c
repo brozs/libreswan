@@ -49,7 +49,7 @@
 #include "secrets.h"    	/* for pubkey_delref() */
 #include "enum_names.h"
 #include "crypt_dh.h"
-#include "hostpair.h"
+#include "host_pair.h"
 #include "kernel.h"
 #include "kernel_xfrm_interface.h"
 #include "iface.h"
@@ -60,6 +60,7 @@
 #include "revival.h"
 #include "ikev1.h"		/* for send_v1_delete() */
 #include "ikev2_delete.h"	/* for record_v2_delete() */
+#include "orient.h"
 
 bool uniqueIDs = FALSE;
 
@@ -113,9 +114,9 @@ static struct finite_state state_ikev2_roof = {
 const struct finite_state *finite_states[STATE_IKE_ROOF] = {
 	[STATE_UNDEFINED] = &state_undefined,
 #ifdef USE_IKEv1
-	[STATE_IKEv1_ROOF] &state_ikev1_roof,
+	[STATE_IKEv1_ROOF] = &state_ikev1_roof,
 #endif
-	[STATE_IKEv2_ROOF] &state_ikev2_roof,
+	[STATE_IKEv2_ROOF] = &state_ikev2_roof,
 };
 
 void lswlog_finite_state(struct jambuf *buf, const struct finite_state *fs)
@@ -338,6 +339,28 @@ static char *readable_humber(uint64_t num,
 	return buf + ret;
 }
 
+static size_t jam_readable_humber(struct jambuf *buf, uint64_t num, bool kilos)
+{
+	uint64_t to_print = num;
+	const char *suffix;
+
+	if (!kilos && num < 1024) {
+		suffix = "B";
+	} else {
+		if (!kilos)
+			to_print /= 1024;
+
+		if (to_print < 1024) {
+			suffix = "KB";
+		} else {
+			to_print /= 1024;
+			suffix = "MB";
+		}
+	}
+
+	return jam(buf, "%" PRIu64 "%s", to_print, suffix + kilos);
+}
+
 /*
  * Get the IKE SA managing the security association.
  */
@@ -383,42 +406,62 @@ struct child_sa *pexpect_child_sa(struct state *st)
 	return (struct child_sa*) st;
 }
 
-union sas { struct child_sa child; struct ike_sa ike; struct state st; };
-
 /*
  * Get a state object.
  * Caller must schedule an event for this object so that it doesn't leak.
  * Caller must insert_state().
  */
 
+union sas {
+	struct child_sa child;
+	struct ike_sa ike;
+	struct state st;
+};
+
 static struct state *new_state(struct connection *c,
 			       const ike_spi_t ike_initiator_spi,
 			       const ike_spi_t ike_responder_spi,
-			       enum sa_type sa_type, struct fd *whackfd)
+			       enum sa_type sa_type,
+			       struct fd *whackfd,
+			       where_t where)
 {
 	static so_serial_t next_so = SOS_FIRST;
-	union sas *sas = alloc_thing(union sas, "struct state in new_state()");
-	passert(&sas->st == &sas->child.sa);
-	passert(&sas->st == &sas->ike.sa);
-	struct state *st = &sas->st;
-	*st = (struct state) {
-		.st_state = &state_undefined,
-		.st_serialno = next_so++,
-		.st_inception = realnow(),
-		.st_establishing_sa = sa_type,
-		.st_connection = c,
-		.st_ike_spis = {
-			.initiator = ike_initiator_spi,
-			.responder = ike_responder_spi,
+	union sas sas = {
+		.st = {
+			.st_state = &state_undefined,
+			.st_serialno = next_so++,
+			.st_inception = realnow(),
+			.st_establishing_sa = sa_type,
+			.st_connection = c,
+			.st_ike_spis = {
+				.initiator = ike_initiator_spi,
+				.responder = ike_responder_spi,
+			},
+			.st_ah = {
+				.protocol = &ip_protocol_ah,
+			},
+			.st_esp = {
+				.protocol = &ip_protocol_esp,
+			},
+			.st_ipcomp = {
+				.protocol = &ip_protocol_comp,
+			},
+			.hidden_variables = {
+				.st_nat_oa = ipv4_info.address.any,
+				.st_natd = ipv4_info.address.any,
+			},
 		},
 	};
+	union sas *sap = clone_thing(sas, "struct state");
+	passert(&sap->st == &sap->child.sa);
+	passert(&sap->st == &sap->ike.sa);
+	struct state *st = &sap->st;
+
 	passert(next_so > SOS_FIRST);   /* overflow can't happen! */
 
-	st->st_logger = alloc_logger(st, &logger_state_vec, HERE);
-	st->st_logger->object_whackfd = dup_any(whackfd);
-
-	st->hidden_variables.st_nat_oa = address_any(&ipv4_info);
-	st->hidden_variables.st_natd = address_any(&ipv4_info);
+	/* XXX: something better? Note: needs real ST */
+	st->st_logger = alloc_logger(st, &logger_state_vec, where);
+	st->st_logger->object_whackfd = fd_dup(whackfd, where);
 
 	dbg("creating state object #%lu at %p", st->st_serialno, (void *) st);
 	add_state_to_db(st);
@@ -429,8 +472,8 @@ static struct state *new_state(struct connection *c,
 
 struct ike_sa *new_v1_istate(struct connection *c, struct fd *whackfd)
 {
-	struct state *st = new_state(c, ike_initiator_spi(),
-				     zero_ike_spi, IKE_SA, whackfd);
+	struct state *st = new_state(c, ike_initiator_spi(), zero_ike_spi,
+				     IKE_SA, whackfd, HERE);
 	struct ike_sa *ike = pexpect_ike_sa(st);
 	return ike;
 }
@@ -439,7 +482,7 @@ struct ike_sa *new_v1_rstate(struct connection *c, struct msg_digest *md)
 {
 	struct state *st = new_state(c, md->hdr.isa_ike_spis.initiator,
 				     ike_responder_spi(&md->sender, md->md_logger),
-				     IKE_SA, null_fd);
+				     IKE_SA, null_fd, HERE);
 	struct ike_sa *ike = pexpect_ike_sa(st);
 	update_ike_endpoints(ike, md);
 	return ike;
@@ -454,7 +497,7 @@ struct ike_sa *new_v2_ike_state(struct connection *c,
 				int try, struct fd *whack_sock)
 {
 	struct state *st = new_state(c, ike_initiator_spi, ike_responder_spi,
-				     IKE_SA, whack_sock);
+				     IKE_SA, whack_sock, HERE);
 	struct ike_sa *ike = pexpect_ike_sa(st);
 	ike->sa.st_sa_role = sa_role;
 	const struct finite_state *fs = finite_states[transition->state];
@@ -493,7 +536,7 @@ void delete_state_by_id_name(struct state *st, void *name)
 	const char *thatidbuf = str_id(&c->spd.that.id, &thatidb);
 	if (streq(thatidbuf, name)) {
 		delete_ike_family(pexpect_ike_sa(st), PROBABLY_SEND_DELETE);
-		/* note: no md->st to clear */
+		/* note: no md->v1_st to clear */
 	}
 }
 
@@ -505,7 +548,7 @@ void v1_delete_state_by_username(struct state *st, void *name)
 
 	if (IS_IKE_SA(st) && streq(st->st_xauth_username, name)) {
 		delete_ike_family(pexpect_ike_sa(st), PROBABLY_SEND_DELETE);
-		/* note: no md->st to clear */
+		/* note: no md->v1_st to clear */
 	}
 }
 
@@ -603,7 +646,7 @@ static bool flush_incomplete_child(struct state *cst, void *pst)
 		 */
 		so_serial_t replacing_sa;
 		switch (child->sa.st_establishing_sa) {
-		case IKE_SA: replacing_sa = c->newest_isakmp_sa; break;
+		case IKE_SA: replacing_sa = c->newest_ike_sa; break;
 		case IPSEC_SA: replacing_sa = c->newest_ipsec_sa; break;
 		default: bad_case(child->sa.st_establishing_sa);
 		}
@@ -721,7 +764,7 @@ static void send_delete(struct state *st)
 
 		/* XXX: something better? */
 		struct fd *ike_whack = ike->sa.st_logger->global_whackfd;
-		ike->sa.st_logger->global_whackfd = dup_any(st->st_logger->global_whackfd);
+		ike->sa.st_logger->global_whackfd = fd_dup(st->st_logger->global_whackfd, HERE);
 
 		record_v2_delete(ike, st);
 		send_recorded_v2_message(ike, "delete notification",
@@ -885,8 +928,8 @@ void delete_state_tail(struct state *st)
 		ipsec_spi_t nego_shunt = shunt_policy_spi(c, TRUE /* negotiation shunt */);
 
 		dbg("OE: delete_state orphaning hold with failureshunt %s (negotiation shunt would have been %s)",
-		    enum_name_short(&spi_names, failure_shunt),
-		    enum_name_short(&spi_names, nego_shunt));
+		    enum_name_short(&policy_spi_names, failure_shunt),
+		    enum_name_short(&policy_spi_names, nego_shunt));
 
 		if (!orphan_holdpass(c, &c->spd, c->spd.this.protocol, failure_shunt, st->st_logger)) {
 			log_state(RC_LOG_SERIOUS, st, "orphan_holdpass() failure ignored");
@@ -976,7 +1019,6 @@ void delete_state_tail(struct state *st)
 
 	event_delete(EVENT_DPD, st);
 	event_delete(EVENT_v2_LIVENESS, st);
-	event_delete(EVENT_v2_RELEASE_WHACK, st);
 	event_delete(EVENT_v1_SEND_XAUTH, st);
 	event_delete(EVENT_v2_ADDR_CHANGE, st);
 
@@ -1037,8 +1079,8 @@ void delete_state_tail(struct state *st)
 	if (st->st_connection->newest_ipsec_sa == st->st_serialno)
 		st->st_connection->newest_ipsec_sa = SOS_NOBODY;
 
-	if (st->st_connection->newest_isakmp_sa == st->st_serialno)
-		st->st_connection->newest_isakmp_sa = SOS_NOBODY;
+	if (st->st_connection->newest_ike_sa == st->st_serialno)
+		st->st_connection->newest_ike_sa = SOS_NOBODY;
 
 	/*
 	 * If policy dictates, try to keep the state's connection
@@ -1055,10 +1097,10 @@ void delete_state_tail(struct state *st)
 
 	/* XXX: hack to avoid reference counting iface_port. */
 	if (st->st_interface != NULL && IS_IKE_SA(st) &&
-	    st->st_serialno >= st->st_connection->newest_isakmp_sa) {
+	    st->st_serialno >= st->st_connection->newest_ike_sa) {
 		/*
 		 * XXX: don't try to delete the iface port of an old
-		 * TCP IKE SA.  It's replacement will have taken
+		 * TCP IKE SA.  Its replacement will have taken
 		 * ownership.  However, do delete a TCP IKE SA when it
 		 * looks like it is getting ready for a replace.
 		 */
@@ -1203,8 +1245,8 @@ void delete_state_tail(struct state *st)
 	pfreeany(st->st_seen_cfg_domains);
 	pfreeany(st->st_seen_cfg_banner);
 
-	free_chunk_content(&st->st_seen_sec_label);
-	free_chunk_content(&st->st_acquired_sec_label);
+	free_chunk_content(&st->st_v1_seen_sec_label);
+	free_chunk_content(&st->st_v1_acquired_sec_label);
 
 	free_chunk_content(&st->st_no_ppk_auth);
 
@@ -1219,7 +1261,7 @@ void delete_state_tail(struct state *st)
 
 bool shared_phase1_connection(const struct connection *c)
 {
-	so_serial_t serial_us = c->newest_isakmp_sa;
+	so_serial_t serial_us = c->newest_ike_sa;
 
 	if (serial_us == SOS_NOBODY)
 		return FALSE;
@@ -1278,8 +1320,7 @@ bool v2_child_connection_probably_shared(struct child_sa *child)
 static void foreach_state_by_connection_func_delete(struct connection *c,
 						    bool (*comparefunc)(
 							    struct state *st,
-							    struct connection *c),
-						    struct fd *whackfd)
+							    struct connection *c))
 {
 	/* this kludge avoids an n^2 algorithm */
 
@@ -1302,15 +1343,9 @@ static void foreach_state_by_connection_func_delete(struct connection *c,
 
 			/* call comparison function */
 			if ((*comparefunc)(this, c)) {
-				/*
-				 * XXX: this simingly redundant
-				 * push/pop has the side effect
-				 * suppressing the message 'deleting
-				 * other state'.
-				 */
-				/* XXX: better way? */
+				/* XXX: something better? */
 				close_any(&this->st_logger->global_whackfd);
-				this->st_logger->global_whackfd = dup_any(whackfd);
+				this->st_logger->global_whackfd = fd_dup(c->logger->global_whackfd, HERE);
 				delete_state(this);
 			}
 		}
@@ -1340,9 +1375,9 @@ void delete_states_dead_interfaces(struct logger *logger)
 				    this->st_serialno, id_vname);
 			/* XXX: better? */
 			close_any(&this->st_logger->global_whackfd);
-			this->st_logger->global_whackfd = dup_any(logger->global_whackfd);
+			this->st_logger->global_whackfd = fd_dup(logger->global_whackfd, HERE);
 			delete_state(this);
-			/* note: no md->st to clear */
+			/* note: no md->v1_st to clear */
 		}
 	}
 }
@@ -1362,14 +1397,14 @@ static bool same_phase1_sa(struct state *this,
 static bool same_phase1_sa_relations(struct state *this,
 				     struct connection *c)
 {
-	so_serial_t parent_sa = c->newest_isakmp_sa;
+	so_serial_t parent_sa = c->newest_ike_sa;
 
 	return this->st_connection == c ||
 	       (parent_sa != SOS_NOBODY &&
 		this->st_clonedfrom == parent_sa);
 }
 
-void delete_states_by_connection(struct connection *c, bool relations, struct fd *whackfd)
+void delete_states_by_connection(struct connection *c, bool relations)
 {
 	enum connection_kind ck = c->kind;
 
@@ -1384,9 +1419,7 @@ void delete_states_by_connection(struct connection *c, bool relations, struct fd
 	if (ck == CK_INSTANCE)
 		c->kind = CK_GOING_AWAY;
 
-	foreach_state_by_connection_func_delete(c,
-						relations ? same_phase1_sa_relations : same_phase1_sa,
-						whackfd);
+	foreach_state_by_connection_func_delete(c, relations ? same_phase1_sa_relations : same_phase1_sa);
 
 	const struct spd_route *sr;
 
@@ -1401,7 +1434,7 @@ void delete_states_by_connection(struct connection *c, bool relations, struct fd
 
 	if (ck == CK_INSTANCE) {
 		c->kind = ck;
-		delete_connection(c, relations);
+		delete_connection(&c, relations);
 	}
 }
 
@@ -1428,7 +1461,8 @@ void delete_states_by_peer(const struct fd *whackfd, const ip_address *peer)
 			    str_endpoint(&this->st_remote_endpoint, &b),
 			    peerstr);
 
-			if (endpoint_address_eq(&this->st_remote_endpoint, peer)) {
+			if (peer != NULL /* ever false? */ &&
+			    endpoint_address_eq_address(this->st_remote_endpoint, *peer)) {
 				if (ph1 == 0 && IS_IKE_SA(this)) {
 					whack_log(RC_COMMENT, whackfd,
 						  "peer %s for connection %s crashed; replacing",
@@ -1468,7 +1502,7 @@ static struct state *duplicate_state(struct connection *c,
 	nst = new_state(c,
 			st->st_ike_spis.initiator,
 			st->st_ike_spis.responder,
-			sa_type, whackfd);
+			sa_type, whackfd, HERE);
 
 	connection_buf cib;
 	dbg("duplicating state object #%lu "PRI_CONNECTION" as #%lu for %s",
@@ -1497,7 +1531,6 @@ static struct state *duplicate_state(struct connection *c,
 	nst->st_v1_seen_fragments = st->st_v1_seen_fragments;
 	nst->st_seen_ppk = st->st_seen_ppk;
 	nst->st_seen_redirect_sup = st->st_seen_redirect_sup;
-	nst->st_seen_use_ipcomp = st->st_seen_use_ipcomp;
 	nst->st_sent_redirect = st->st_sent_redirect;
 	nst->st_event = NULL;
 
@@ -1518,21 +1551,12 @@ static struct state *duplicate_state(struct connection *c,
 		clone_nss_symkey_field(st_skey_pi_nss);
 		clone_nss_symkey_field(st_skey_pr_nss);
 		clone_nss_symkey_field(st_enc_key_nss);
-
-		clone_nss_symkey_field(st_sk_d_no_ppk);
-		clone_nss_symkey_field(st_sk_pi_no_ppk);
-		clone_nss_symkey_field(st_sk_pr_no_ppk);
 #   undef clone_nss_symkey_field
 
 		/* v2 duplication of state */
-#   define state_clone_chunk(CHUNK) \
-		nst->CHUNK = clone_hunk(st->CHUNK, #CHUNK " in duplicate state")
-
+#   define state_clone_chunk(CHUNK) nst->CHUNK = clone_hunk(st->CHUNK, #CHUNK " in duplicate state")
 		state_clone_chunk(st_ni);
 		state_clone_chunk(st_nr);
-		state_clone_chunk(st_skey_initiator_salt);
-		state_clone_chunk(st_skey_responder_salt);
-
 #   undef state_clone_chunk
 	}
 
@@ -1548,8 +1572,9 @@ static struct state *duplicate_state(struct connection *c,
 	nst->st_seen_cfg_domains = clone_str(st->st_seen_cfg_domains, "child st_seen_cfg_domains");
 	nst->st_seen_cfg_banner = clone_str(st->st_seen_cfg_banner, "child st_seen_cfg_banner");
 
-	nst->st_acquired_sec_label = st->st_acquired_sec_label;
-	nst->st_seen_sec_label = st->st_seen_sec_label;
+	/* XXX: scary */
+	nst->st_v1_acquired_sec_label = st->st_v1_acquired_sec_label;
+	nst->st_v1_seen_sec_label = st->st_v1_seen_sec_label;
 
 	return nst;
 }
@@ -1575,6 +1600,7 @@ struct child_sa *new_v2_child_state(struct connection *c,
 	change_state(&child->sa, kind);
 	const struct state_v2_microcode *transition = child->sa.st_state->v2_transitions;
 	set_v2_transition(&child->sa, transition, HERE);
+	binlog_refresh_state(&child->sa);
 	return child;
 }
 
@@ -1771,7 +1797,7 @@ struct state *find_phase2_state_to_delete(const struct state *p1st,
 					  bool *bogus)
 {
 	const struct connection *p1c = p1st->st_connection;
-	struct state  *bogusst = NULL;
+	struct state *bogusst = NULL;
 
 	*bogus = FALSE;
 	dbg("FOR_EACH_STATE_... in %s", __func__);
@@ -1801,36 +1827,6 @@ struct state *find_phase2_state_to_delete(const struct state *p1st,
 		}
 	}
 	return bogusst;
-}
-
-bool find_pending_phase2(const so_serial_t psn,
-		const struct connection *c, lset_t ok_states)
-{
-	struct state *best = NULL;
-	int n = 0;
-
-	passert(psn >= SOS_FIRST);
-
-	dbg("FOR_EACH_STATE_... in %s", __func__);
-	struct state *st = NULL;
-	FOR_EACH_STATE_NEW2OLD(st) {
-		if (LHAS(ok_states, st->st_state->kind) &&
-		    IS_CHILD_SA(st) &&
-		    st->st_clonedfrom == psn &&
-		    streq(st->st_connection->name, c->name)) /* not instances */
-		{
-			n++;
-			if (best == NULL || best->st_serialno < st->st_serialno)
-				best = st;
-		}
-	}
-
-	if (n > 0) {
-		dbg("connection %s has %d pending IPsec negotiations ike #%lu last child state #%lu",
-		    c->name, n, psn, best->st_serialno);
-	}
-
-	return best != NULL;
 }
 
 /*
@@ -1877,7 +1873,7 @@ struct state *find_phase1_state(const struct connection *c, lset_t ok_states)
 		    c->ike_version == st->st_connection->ike_version &&
 		    c->host_pair == st->st_connection->host_pair &&
 		    same_peer_ids(c, st->st_connection, NULL) &&
-		    endpoint_address_eq(&st->st_remote_endpoint, &c->spd.that.host_addr) &&
+		    endpoint_address_eq_address(st->st_remote_endpoint, c->spd.that.host_addr) &&
 		    IS_IKE_SA(st) &&
 		    (best == NULL || best->st_serialno < st->st_serialno))
 		{
@@ -1900,8 +1896,8 @@ void state_eroute_usage(const ip_selector *ours, const ip_selector *peers,
 		if (IS_IPSEC_SA_ESTABLISHED(st) &&
 		    c->spd.eroute_owner == st->st_serialno &&
 		    c->spd.routing == RT_ROUTED_TUNNEL &&
-		    selector_subnet_eq(&c->spd.this.client, ours) &&
-		    selector_subnet_eq(&c->spd.that.client, peers)) {
+		    selector_subnet_eq_subnet(c->spd.this.client, *ours) &&
+		    selector_subnet_eq_subnet(c->spd.that.client, *peers)) {
 			if (st->st_outbound_count != count) {
 				st->st_outbound_count = count;
 				st->st_outbound_time = nw;
@@ -1950,7 +1946,7 @@ static void jam_state_traffic(struct jambuf *buf, struct state *st)
 
 	if (st->st_xauth_username[0] == '\0') {
 		jam(buf, ", id='");
-		jam_id(buf, &c->spd.that.id, jam_sanitized_bytes);
+		jam_id_bytes(buf, &c->spd.that.id, jam_sanitized_bytes);
 		jam(buf, "'");
 	}
 
@@ -1990,231 +1986,185 @@ static void show_state_traffic(struct show *s,
 /*
  * odd fact: st cannot be const because we call get_sa_info on it
  */
-void fmt_state(struct state *st, const monotime_t now,
-	       char *state_buf, const size_t state_buf_len,
-	       char *state_buf2, const size_t state_buf2_len)
+
+static void show_state(struct show *s, struct state *st, const monotime_t now)
 {
 	/* what the heck is interesting about a state? */
-	const struct connection *c = st->st_connection;
-	char dpdbuf[128];
-	char traffic_buf[512], *mbcp;
-	const char *np1 = c->newest_isakmp_sa == st->st_serialno ?
-			  "; newest ISAKMP" : "";
-	const char *np2 = c->newest_ipsec_sa == st->st_serialno ?
-			  "; newest IPSEC" : "";
-	/* XXX spd-enum */
-	const char *eo = c->spd.eroute_owner == st->st_serialno ?
-			 "; eroute owner" : "";
+	SHOW_JAMBUF(RC_COMMENT, s, buf) {
 
-	connection_buf cib;
-	const char *inst = str_connection_instance(c, &cib);
+		const struct connection *c = st->st_connection;
 
-	dpdbuf[0] = '\0';	/* default to empty string */
-	if (IS_IPSEC_SA_ESTABLISHED(st)) {
-		snprintf(dpdbuf, sizeof(dpdbuf), "; isakmp#%lu",
-			 st->st_clonedfrom);
-	} else {
-		if (st->hidden_variables.st_peer_supports_dpd) {
+		jam(buf, "#%lu: ", st->st_serialno);
+		jam_connection(buf, c);
+		jam(buf, ":%u", endpoint_hport(st->st_remote_endpoint));
+		if (st->st_interface->protocol == &ip_protocol_tcp) {
+			jam(buf, "(tcp)");
+		}
+		jam(buf, " %s (%s)", st->st_state->name, st->st_state->story);
+
+		/*
+		 * Hunt and peck for an event?  Should it show the first?
+		 *
+		 * Should this sort the events?
+		 */
+		FOR_EACH_THING(liveness, st->st_retransmit_event, st->st_event) {
+			if (liveness != NULL) {
+				jam(buf, "; ");
+				jam_enum_short(buf, &timer_event_names, liveness->ev_type);
+				intmax_t delta = deltasecs(monotimediff(liveness->ev_time, now));
+				jam(buf, " in %jds", delta);
+			}
+		}
+
+		if (c->newest_ike_sa == st->st_serialno) {
+			jam(buf, "; newest ISAKMP");
+		}
+
+		if (c->newest_ipsec_sa == st->st_serialno) {
+			jam(buf, "; newest IPSEC");
+		}
+
+		/* XXX spd-enum */ /* XXX: huh? */
+		if (c->spd.eroute_owner == st->st_serialno) {
+			jam(buf, "; eroute owner");
+		}
+
+		if (IS_IPSEC_SA_ESTABLISHED(st)) {
+			jam(buf, "; isakmp#%lu", st->st_clonedfrom);
+		} else if (st->hidden_variables.st_peer_supports_dpd) {
 			/* ??? why is printing -1 better than 0? */
-			snprintf(dpdbuf, sizeof(dpdbuf),
-				 "; lastdpd=%jds(seq in:%u out:%u)",
-				 !is_monotime_epoch(st->st_last_dpd) ?
-					deltasecs(monotimediff(mononow(), st->st_last_dpd)) : (intmax_t)-1,
-				 st->st_dpd_seqno,
-				 st->st_dpd_expectseqno);
+			jam(buf, "; lastdpd=%jds(seq in:%u out:%u)",
+			    !is_monotime_epoch(st->st_last_dpd) ?
+			    deltasecs(monotimediff(mononow(), st->st_last_dpd)) : (intmax_t)-1,
+			    st->st_dpd_seqno,
+			    st->st_dpd_expectseqno);
 		} else if (dpd_active_locally(st) && (st->st_ike_version == IKEv2)) {
 			/* stats are on parent sa */
 			if (IS_CHILD_SA(st)) {
 				struct state *pst = state_with_serialno(st->st_clonedfrom);
-
 				if (pst != NULL) {
-					snprintf(dpdbuf, sizeof(dpdbuf),
-						"; lastlive=%jds",
-						 !is_monotime_epoch(pst->st_last_liveness) ?
-						 deltasecs(monotimediff(mononow(), pst->st_last_liveness)) :
-						0);
+					jam(buf, "; lastlive=%jds",
+					    !is_monotime_epoch(pst->st_last_liveness) ?
+					    deltasecs(monotimediff(mononow(), pst->st_last_liveness)) :
+					    0);
 				}
 			}
+		} else if (st->st_ike_version == IKEv1) {
+			jam(buf, "; nodpd");
+		}
+
+		if (st->st_offloaded_task != NULL && !st->st_v1_offloaded_task_in_background) {
+			jam(buf, "; crypto_calculating");
+		} else if (st->st_suspended_md != NULL) {
+			jam(buf, "; crypto/dns-lookup");
 		} else {
-			if (st->st_ike_version == IKEv1)
-				snprintf(dpdbuf, sizeof(dpdbuf), "; nodpd");
+			jam(buf, "; idle");
 		}
+		jam(buf, ";");
 	}
+}
 
-	/*
-	 * Hunt and peck for an event?  Should it show the first?
-	 */
-	struct pluto_event *liveness_events[] = {
-		st->st_event,
-		st->st_retransmit_event,
-	};
-	struct pluto_event *liveness = NULL;
-	for (unsigned e = 0; e < elemsof(liveness_events); e++) {
-		liveness = liveness_events[e];
-		if (liveness != NULL) {
-			break;
-		}
-	}
-	intmax_t delta = (liveness == NULL ? -1 : /* ??? sort of odd signifier */
-			  deltasecs(monotimediff(liveness->ev_time, now)));
+static void show_established_child_details(struct show *s, struct state *st)
+{
+	SHOW_JAMBUF(RC_COMMENT, s, buf) {
+		const struct connection *c = st->st_connection;
 
-	snprintf(state_buf, state_buf_len,
-		 "#%lu: \"%s\"%s:%u%s %s (%s); %s in %jds%s%s%s%s; %s;",
-		 st->st_serialno,
-		 c->name, inst,
-		 endpoint_hport(&st->st_remote_endpoint),
-		 (st->st_interface->protocol == &ip_protocol_tcp) ? "(tcp)" : "",
-		 st->st_state->name,
-		 st->st_state->story,
-		 (liveness == NULL ? "none" :
-		  enum_name(&timer_event_names, liveness->ev_type)),
-		 delta,
-		 np1, np2, eo, dpdbuf,
-		 (st->st_offloaded_task != NULL && !st->st_v1_offloaded_task_in_background)
-		 ? "crypto_calculating" :
-			st->st_suspended_md != NULL ?  "crypto/dns-lookup" :
-			"idle");
-
-	/* print out SPIs if SAs are established */
-	if (state_buf2_len != 0)
-		state_buf2[0] = '\0';   /* default to empty */
-	if (IS_IPSEC_SA_ESTABLISHED(st)) {
-		char lastused[40];      /* should be plenty long enough */
-		char saids_buf[(1 + SATOT_BUF) * 6];
-		struct jambuf buf = ARRAY_AS_JAMBUF(saids_buf);
-
-#	define add_said(ADST, ASPI, APROTO)				\
-		{							\
-			ip_said s = said3(ADST, ASPI, APROTO);		\
-			jam(&buf, " ");					\
-			jam_said(&buf, &s);				\
-		}
+		jam(buf, "#%lu: ", st->st_serialno);
+		jam_connection(buf, c);
 
 		/*
 		 * XXX - mcr last used is really an attribute of
 		 * the connection
 		 */
-		lastused[0] = '\0';
 		if (c->spd.eroute_owner == st->st_serialno &&
 		    st->st_outbound_count != 0) {
-			snprintf(lastused, sizeof(lastused),
-				 " used %jds ago;",
-				 deltasecs(monotimediff(mononow(),
-							st->st_outbound_time)));
+			jam(buf, " used %jds ago;",
+			    deltasecs(monotimediff(mononow(),
+						   st->st_outbound_time)));
 		}
 
-		mbcp = traffic_buf +
-		       snprintf(traffic_buf, sizeof(traffic_buf) - 1,
-				"Traffic:");
+#define add_said(ADST, ASPI, APROTO)				\
+		{						\
+			ip_said s = said3(ADST, ASPI, APROTO);	\
+			jam(buf, " ");				\
+			jam_said(buf, &s);			\
+		}
+
+		/* SAIDs */
 
 		if (st->st_ah.present) {
 			add_said(&c->spd.that.host_addr, st->st_ah.attrs.spi,
 				 &ip_protocol_ah);
-			if (get_sa_info(st, FALSE, NULL)) {
-				mbcp = readable_humber(st->st_ah.peer_bytes,
-						       mbcp,
-						       traffic_buf +
-							  sizeof(traffic_buf),
-						       " AHout=");
-			}
 			add_said(&c->spd.this.host_addr, st->st_ah.our_spi,
 				 &ip_protocol_ah);
-			if (get_sa_info(st, TRUE, NULL)) {
-				mbcp = readable_humber(st->st_ah.our_bytes,
-						       mbcp,
-						       traffic_buf +
-							 sizeof(traffic_buf),
-						       " AHin=");
-			}
-			mbcp = readable_humber(
-					(u_long)st->st_ah.attrs.life_kilobytes,
-					mbcp,
-					traffic_buf +
-					  sizeof(traffic_buf),
-					"! AHmax=");
 		}
 		if (st->st_esp.present) {
 			add_said(&c->spd.that.host_addr, st->st_esp.attrs.spi,
 				 &ip_protocol_esp);
-			if (get_sa_info(st, TRUE, NULL)) {
-				mbcp = readable_humber(st->st_esp.our_bytes,
-						       mbcp,
-						       traffic_buf +
-							 sizeof(traffic_buf),
-						       " ESPin=");
-			}
 			add_said(&c->spd.this.host_addr, st->st_esp.our_spi,
 				 &ip_protocol_esp);
-			if (get_sa_info(st, FALSE, NULL)) {
-				mbcp = readable_humber(st->st_esp.peer_bytes,
-						       mbcp,
-						       traffic_buf +
-							 sizeof(traffic_buf),
-						       " ESPout=");
-			}
-
-			mbcp = readable_humber(
-					(u_long)st->st_esp.attrs.life_kilobytes,
-					mbcp,
-					traffic_buf +
-					  sizeof(traffic_buf),
-					"! ESPmax=");
 		}
 		if (st->st_ipcomp.present) {
 			add_said(&c->spd.that.host_addr,
 				 st->st_ipcomp.attrs.spi, &ip_protocol_comp);
-			if (get_sa_info(st, FALSE, NULL)) {
-				mbcp = readable_humber(
-						st->st_ipcomp.peer_bytes,
-						mbcp,
-						traffic_buf +
-						  sizeof(traffic_buf),
-						" IPCOMPout=");
-			}
 			add_said(&c->spd.this.host_addr, st->st_ipcomp.our_spi,
 				 &ip_protocol_comp);
-			if (get_sa_info(st, TRUE, NULL)) {
-				mbcp = readable_humber(
-						st->st_ipcomp.our_bytes,
-						mbcp,
-						traffic_buf +
-						  sizeof(traffic_buf),
-						" IPCOMPin=");
-			}
-
-			/* mbcp not subsequently used */
-			mbcp = readable_humber(
-					(u_long)st->st_ipcomp.attrs.life_kilobytes,
-					mbcp,
-					traffic_buf + sizeof(traffic_buf),
-					"! IPCOMPmax=");
 		}
-
 #if defined(XFRM_SUPPORT)
-		if (st->st_ah.attrs.mode ==
-			ENCAPSULATION_MODE_TUNNEL ||
-			st->st_esp.attrs.mode ==
-			ENCAPSULATION_MODE_TUNNEL ||
-			st->st_ipcomp.attrs.mode ==
-			ENCAPSULATION_MODE_TUNNEL) {
-			add_said(&c->spd.that.host_addr, st->st_tunnel_out_spi,
+		if (st->st_ah.attrs.mode == ENCAPSULATION_MODE_TUNNEL ||
+		    st->st_esp.attrs.mode == ENCAPSULATION_MODE_TUNNEL ||
+		    st->st_ipcomp.attrs.mode == ENCAPSULATION_MODE_TUNNEL) {
+			add_said(&c->spd.that.host_addr, (ipsec_spi_t)0,
 				 &ip_protocol_ipip);
-			add_said(&c->spd.this.host_addr, st->st_tunnel_in_spi,
+			add_said(&c->spd.this.host_addr, (ipsec_spi_t)0,
 				 &ip_protocol_ipip);
 		}
 #endif
-
-		snprintf(state_buf2, state_buf2_len,
-			"#%lu: \"%s\"%s%s%s %s %s%s",
-			st->st_serialno,
-			c->name, inst,
-			lastused,
-			saids_buf,
-			traffic_buf,
-			st->st_xauth_username[0] != '\0' ? "username=" : "",
-			st->st_xauth_username);
-
 #       undef add_said
+
+		jam(buf, " Traffic:");
+
+		if (st->st_ah.present) {
+			if (get_sa_info(st, false, NULL)) {
+				jam(buf, " AHout=");
+				jam_readable_humber(buf, st->st_ah.peer_bytes, false);
+			}
+			if (get_sa_info(st, TRUE, NULL)) {
+				jam(buf, " AHin=");
+				jam_readable_humber(buf, st->st_ah.our_bytes, false);
+			}
+			jam(buf, " AHmax=");		/* TBD: "The ! is not printed." */
+			jam_readable_humber(buf, st->st_ah.attrs.life_kilobytes, true);
+		}
+		if (st->st_esp.present) {
+			if (get_sa_info(st, TRUE, NULL)) {
+				jam(buf, " ESPin=");
+				jam_readable_humber(buf, st->st_esp.our_bytes, false);
+			}
+			if (get_sa_info(st, FALSE, NULL)) {
+				jam(buf, " ESPout=");
+				jam_readable_humber(buf, st->st_esp.peer_bytes, false);
+			}
+			jam(buf, " ESPmax=");		/* TBD: "The ! is not printed." */
+			jam_readable_humber(buf, st->st_esp.attrs.life_kilobytes, true);
+		}
+		if (st->st_ipcomp.present) {
+			if (get_sa_info(st, FALSE, NULL)) {
+				jam(buf, " IPCOMPout=");
+				jam_readable_humber(buf, st->st_ipcomp.peer_bytes, false);
+			}
+			if (get_sa_info(st, TRUE, NULL)) {
+				jam(buf, " IPCOMPin=");
+				jam_readable_humber(buf, st->st_ipcomp.our_bytes, false);
+			}
+			jam(buf, "! IPCOMPmax=");	/* TBD: "The ! is not printed." */
+			jam_readable_humber(buf, st->st_ipcomp.attrs.life_kilobytes, true);
+		}
+
+		jam(buf, " "); /* TBD: trailing blank */
+		if (st->st_xauth_username[0] != '\0') {
+			jam(buf, "username=%s", st->st_xauth_username);
+		}
 	}
 }
 
@@ -2309,15 +2259,14 @@ static struct state **sort_states(int (*sort_fn)(const void *, const void *),
 		array[p] = NULL;
 	}
 
-	/* sort it!  */
+	/* sort it! */
 	qsort(array, count, sizeof(struct state *), sort_fn);
 
 	return array;
 }
 
 static int show_newest_state_traffic(struct connection *c,
-				     struct fd *unused_whackfd UNUSED,
-				     void *arg)
+				     void *arg, struct logger *logger UNUSED)
 {
 	struct show *s = arg;
 	struct state *st = state_by_serialno(c->newest_ipsec_sa);
@@ -2350,12 +2299,11 @@ void show_traffic_status(struct show *s, const char *name)
 
 		if (c != NULL) {
 			/* cast away const sillyness */
-			show_newest_state_traffic(c, NULL, s);
+			show_newest_state_traffic(c, s, show_logger(s));
 		} else {
 			/* cast away const sillyness */
-			int count = foreach_connection_by_alias(name, NULL,
-								show_newest_state_traffic,
-								s);
+			int count = foreach_connection_by_alias(name, show_newest_state_traffic,
+								s, show_logger(s));
 			if (count == 0) {
 				/*
 				 * XXX: don't bother implementing
@@ -2396,24 +2344,21 @@ void show_states(struct show *s)
 					   __func__);
 
 	if (array != NULL) {
-		monotime_t n = mononow();
+		monotime_t now = mononow();
 		/* now print sorted results */
 		int i;
 		for (i = 0; array[i] != NULL; i++) {
 			struct state *st = array[i];
+			show_state(s, st, now);
+			if (IS_IPSEC_SA_ESTABLISHED(st)) {
+				/* print out SPIs if SAs are established */
+				show_established_child_details(s, st);
+			}  else if (IS_IKE_SA(st)) {
+				/* show any associated pending Phase 2s */
+				show_pending_child_details(s, st->st_connection,
+							   pexpect_ike_sa(st));
+			}
 
-			char state_buf[LOG_WIDTH];
-			char state_buf2[LOG_WIDTH];
-			fmt_state(st, n, state_buf, sizeof(state_buf),
-				  state_buf2, sizeof(state_buf2));
-			show_comment(s, "%s", state_buf);
-			if (state_buf2[0] != '\0')
-				show_comment(s, "%s", state_buf2);
-
-			/* show any associated pending Phase 2s */
-			if (IS_IKE_SA(st))
-				show_pending_phase2(s, st->st_connection,
-						    pexpect_ike_sa(st));
 		}
 		pfree(array);
 	}
@@ -2610,12 +2555,12 @@ bool update_mobike_endpoints(struct ike_sa *ike, const struct msg_digest *md)
 	dbg("#%lu pst=#%lu %s", child->sa.st_serialno,
 	    ike->sa.st_serialno, buf);
 
-	if (endpoint_eq(&old_endpoint, &new_endpoint)) {
+	if (endpoint_eq_endpoint(old_endpoint, new_endpoint)) {
 		if (md_role == MESSAGE_REQUEST) {
 			/* on responder NAT could hide end-to-end change */
 			endpoint_buf b;
 			log_state(RC_LOG, &ike->sa,
-				  "MOBIKE success no change to kernel SA same IP address and port  %s",
+				  "MOBIKE success no change to kernel SA same IP address and port %s",
 				  str_endpoint_sensitive(&old_endpoint, &b));
 
 			return true;
@@ -2632,20 +2577,20 @@ bool update_mobike_endpoints(struct ike_sa *ike, const struct msg_digest *md)
 	switch (md_role) {
 	case MESSAGE_RESPONSE:
 		/* MOBIKE initiator processing response */
-		c->spd.this.host_addr = endpoint_address(&child->sa.st_mobike_local_endpoint);
+		c->spd.this.host_addr = endpoint_address(child->sa.st_mobike_local_endpoint);
 		dbg("%s() %s.host_port: %u->%u", __func__, c->spd.this.leftright,
-		    c->spd.this.host_port, endpoint_hport(&child->sa.st_mobike_local_endpoint));
-		c->spd.this.host_port = endpoint_hport(&child->sa.st_mobike_local_endpoint);
-		c->spd.this.host_nexthop  = child->sa.st_mobike_host_nexthop;
+		    c->spd.this.host_port, endpoint_hport(child->sa.st_mobike_local_endpoint));
+		c->spd.this.host_port = endpoint_hport(child->sa.st_mobike_local_endpoint);
+		c->spd.this.host_nexthop = child->sa.st_mobike_host_nexthop;
 
 		ike->sa.st_interface = child->sa.st_interface = md->iface;
 		break;
 	case MESSAGE_REQUEST:
 		/* MOBIKE responder processing request */
-		c->spd.that.host_addr = endpoint_address(&md->sender);
+		c->spd.that.host_addr = endpoint_address(md->sender);
 		dbg("%s() %s.host_port: %u->%u", __func__, c->spd.that.leftright,
-		    c->spd.that.host_port, endpoint_hport(&md->sender));
-		c->spd.that.host_port = endpoint_hport(&md->sender);
+		    c->spd.that.host_port, endpoint_hport(md->sender));
+		c->spd.that.host_port = endpoint_hport(md->sender);
 
 		/* for the consistency, correct output in ipsec status */
 		child->sa.st_remote_endpoint = ike->sa.st_remote_endpoint = md->sender;
@@ -2658,11 +2603,10 @@ bool update_mobike_endpoints(struct ike_sa *ike, const struct msg_digest *md)
 	pexpect_st_local_endpoint(&child->sa);
 
 	/* reset liveness */
-	ike->sa.st_pend_liveness = FALSE;
 	ike->sa.st_last_liveness = monotime_epoch;
 
 	delete_oriented_hp(c); /* hp list may have changed */
-	if (!orient(c)) {
+	if (!orient(c, ike->sa.st_logger)) {
 		pexpect_fail(ike->sa.st_logger, HERE,
 			     "%s after mobike failed", "orient");
 	}
@@ -2672,8 +2616,8 @@ bool update_mobike_endpoints(struct ike_sa *ike, const struct msg_digest *md)
 	if (md_role == MESSAGE_RESPONSE) {
 		/* MOBIKE initiator processing response */
 		migration_up(child->sa.st_connection, &child->sa);
-		ike->sa.st_deleted_local_addr = address_any(&ipv4_info);
-		child->sa.st_deleted_local_addr = address_any(&ipv4_info);
+		ike->sa.st_deleted_local_addr = ipv4_info.address.any;
+		child->sa.st_deleted_local_addr = ipv4_info.address.any;
 		if (dpd_active_locally(&child->sa) && child->sa.st_liveness_event == NULL) {
 			dbg("dpd re-enabled after mobike, scheduling ikev2 liveness checks");
 			deltatime_t delay = deltatime_max(child->sa.st_connection->dpd_delay, deltatime(MIN_LIVENESS));
@@ -2729,7 +2673,7 @@ static bool v2_migrate_predicate(struct state *st, void *context)
 void v2_migrate_children(struct ike_sa *from, struct child_sa *to)
 {
 	/*
-	 * TO is in the process of being emancipated.  It's
+	 * TO is in the process of being emancipated.  Its
 	 * .st_clonedfrom has been zapped and the new IKE_SPIs
 	 * installed (a true child would have FROM's IKE SPIs).
 	 *
@@ -2771,7 +2715,7 @@ static bool delete_ike_family_child(struct state *st, void *unused_context UNUSE
 	    &ike->sa != st &&
 	    fd_p(ike->sa.st_logger->global_whackfd)) {
 		close_any(&st->st_logger->global_whackfd);
-		st->st_logger->global_whackfd = dup_any(ike->sa.st_logger->global_whackfd);
+		st->st_logger->global_whackfd = fd_dup(ike->sa.st_logger->global_whackfd, HERE);
 	}
 	switch (st->st_ike_version) {
 	case IKEv1:
@@ -2962,20 +2906,6 @@ void set_newest_ipsec_sa(const char *m, struct state *const st)
 	log_newest_sa_change(m, old_ipsec_sa, st);
 }
 
-void record_newaddr(ip_address *ip, char *a_type)
-{
-	address_buf ip_str;
-	dbg("XFRM RTM_NEWADDR %s %s", str_address(ip, &ip_str), a_type);
-	for_each_state(ikev2_record_newaddr, ip, __func__);
-}
-
-void record_deladdr(ip_address *ip, char *a_type)
-{
-	address_buf ip_str;
-	dbg("XFRM RTM_DELADDR %s %s", str_address(ip, &ip_str), a_type);
-	for_each_state(ikev2_record_deladdr, ip, __func__);
-}
-
 static void append_word(char **sentence, const char *word)
 {
 	size_t sl = strlen(*sentence);
@@ -3013,8 +2943,8 @@ void append_st_cfg_domain(struct state *st, char *domain)
 	}
 }
 
-static void suppress_delete_notify(const struct ike_sa *ike,
-				   const char *what, so_serial_t so)
+void suppress_delete_notify(const struct ike_sa *ike,
+			    const char *what, so_serial_t so)
 {
 	struct state *st = state_by_serialno(so);
 	if (st == NULL) {
@@ -3027,122 +2957,6 @@ static void suppress_delete_notify(const struct ike_sa *ike,
 	st->st_dont_send_delete = true;
 	dbg("marked %s state #%lu to suppress sending delete notify",
 	    what, st->st_serialno);
-}
-
-/*
- * an ISAKMP SA has been established.
- * Note the serial number, and release any connections with
- * the same peer ID but different peer IP address.
- *
- * Called by IKEv1 and IKEv2 when the IKE SA is established.
- * It checks if the freshly established connection needs is
- * replacing an established version of itself.
- *
- * The use of uniqueIDs is mostly historic and might be removed
- * in a future version. It is ignored for PSK based connections,
- * which only act based on being a "server using PSK".
- *
- * IKEv1 code does not send or process INITIAL_CONTACT
- * IKEv2 codes does so we take it into account.
- */
-
-void IKE_SA_established(const struct ike_sa *ike)
-{
-	struct connection *c = ike->sa.st_connection;
-	bool authnull = (LIN(POLICY_AUTH_NULL, c->policy) || c->spd.that.authby == AUTHBY_NULL);
-
-	if (c->spd.this.xauth_server && LIN(POLICY_PSK, c->policy)) {
-		/*
-		 * If we are a server and use PSK, all clients use the same group ID
-		 * Note that "xauth_server" also refers to IKEv2 CP
-		 */
-		dbg("We are a server using PSK and clients are using a group ID");
-	} else if (!uniqueIDs) {
-		dbg("uniqueIDs disabled, not contemplating releasing older self");
-	} else {
-		/*
-		 * for all existing connections: if the same Phase 1 IDs are used,
-		 * unorient the (old) connection (if different from current connection)
-		 * Only do this for connections with the same name (can be shared ike sa)
-		 */
-		dbg("FOR_EACH_CONNECTION_... in %s", __func__);
-		for (struct connection *d = connections; d != NULL; ) {
-			/* might move underneath us */
-			struct connection *next = d->ac_next;
-
-			/* if old IKE SA is same as new IKE sa and non-auth isn't overwrting auth */
-			if (c != d && c->kind == d->kind && streq(c->name, d->name) &&
-			    same_id(&c->spd.this.id, &d->spd.this.id) &&
-			    same_id(&c->spd.that.id, &d->spd.that.id))
-			{
-				bool old_is_nullauth = (LIN(POLICY_AUTH_NULL, d->policy) || d->spd.that.authby == AUTHBY_NULL);
-				bool same_remote_ip = sameaddr(&c->spd.that.host_addr, &d->spd.that.host_addr);
-
-				if (same_remote_ip && (!old_is_nullauth && authnull)) {
-					log_state(RC_LOG, &ike->sa, "cannot replace old authenticated connection with authnull connection");
-				} else if (!same_remote_ip && old_is_nullauth && authnull) {
-					log_state(RC_LOG, &ike->sa, "NULL auth ID for different IP's cannot replace each other");
-				} else {
-					dbg("unorienting old connection with same IDs");
-					/*
-					 * When replacing an old
-					 * existing connection,
-					 * suppress sending delete
-					 * notify
-					 */
-					suppress_delete_notify(ike, "ISAKMP", d->newest_isakmp_sa);
-					suppress_delete_notify(ike, "IKE", d->newest_ipsec_sa);
-					/*
-					 * XXX: assume this call
-					 * doesn't want to log to
-					 * whack(?).  While PST still
-					 * has an attached whack, the
-					 * global whack that this call
-					 * would have used detached
-					 * long ago.
-					 */
-					release_connection(d, false, null_fd); /* this deletes the states */
-				}
-			}
-			d = next;
-		}
-
-		/*
-		 * This only affects IKEv2, since we don't store any
-		 * received INITIAL_CONTACT for IKEv1.
-		 * We don't do this on IKEv1, because it seems to
-		 * confuse various third parties (Windows, Cisco VPN 300,
-		 * and juniper
-		 * likely because this would be called before the IPsec SA
-		 * of QuickMode is installed, so the remote endpoints view
-		 * this IKE SA still as the active one?
-		 */
-		if (ike->sa.st_seen_initialc) {
-			if (c->newest_isakmp_sa != SOS_NOBODY &&
-			    c->newest_isakmp_sa != ike->sa.st_serialno) {
-				struct state *old_p1 = state_by_serialno(c->newest_isakmp_sa);
-
-				dbg("deleting replaced IKE state for %s",
-				    old_p1->st_connection->name);
-				old_p1->st_dont_send_delete = true;
-				event_force(EVENT_SA_EXPIRE, old_p1);
-			}
-
-			if (c->newest_ipsec_sa != SOS_NOBODY) {
-				struct state *old_p2 = state_by_serialno(c->newest_ipsec_sa);
-				struct connection *d = old_p2 == NULL ? NULL : old_p2->st_connection;
-
-				if (c == d && same_id(&c->spd.that.id, &d->spd.that.id)) {
-					dbg("Initial Contact received, deleting old state #%lu from connection '%s'",
-					    c->newest_ipsec_sa, c->name);
-					old_p2->st_dont_send_delete = true;
-					event_force(EVENT_SA_EXPIRE, old_p2);
-				}
-			}
-		}
-	}
-
-	c->newest_isakmp_sa = ike->sa.st_serialno;
 }
 
 static void list_state_event(struct show *s, struct state *st,
@@ -3175,7 +2989,6 @@ void list_state_events(struct show *s, monotime_t now)
 	FOR_EACH_STATE_OLD2NEW(st) {
 		list_state_event(s, st, st->st_event, now);
 		list_state_event(s, st, st->st_liveness_event, now);
-		list_state_event(s, st, st->st_rel_whack_event, now);
 		list_state_event(s, st, st->st_send_xauth_event, now);
 		list_state_event(s, st, st->st_addr_change_event, now);
 		list_state_event(s, st, st->st_dpd_event, now);
@@ -3225,10 +3038,10 @@ void switch_md_st(struct msg_digest *md, struct state *st, where_t where)
 {
 	LSWDBGP(DBG_BASE, buf) {
 		jam(buf, "switching IKEv%d MD.ST from ", st->st_ike_version);
-		jam_st(buf, md->st);
+		jam_st(buf, md->v1_st);
 		jam(buf, " to ");
 		jam_st(buf, st);
 		jam(buf, " "PRI_WHERE, pri_where(where));
 	}
-	md->st = st;
+	md->v1_st = st;
 }

@@ -107,7 +107,6 @@ KVM_UPGRADE_PACKAGES ?= \
     crypto-policies-scripts \
     curl-devel \
     elfutils-libelf-devel \
-    fipscheck-devel \
     flex \
     fping \
     gcc \
@@ -130,6 +129,7 @@ KVM_UPGRADE_PACKAGES ?= \
     libseccomp-devel \
     libselinux-devel \
     linux-firmware \
+    linux-system-roles \
     lsof \
     make \
     mtr \
@@ -149,10 +149,13 @@ KVM_UPGRADE_PACKAGES ?= \
     psmisc \
     python3-pyOpenSSL \
     python3-pexpect \
+    python3-netaddr \
     rpm-build \
     rsync \
+    selinux-policy-devel \
     screen \
     strace \
+    softhsm \
     systemd-devel \
     tar \
     tcpdump \
@@ -188,7 +191,6 @@ KVM_DEBUGINFO = \
 	libgpg-error-debuginfo \
 	libidn-debuginfo \
 	libidn2-debuginfo \
-	libnghttp2-debuginfo \
 	libpsl-debuginfo \
 	libseccomp-debuginfo \
 	libselinux-debuginfo \

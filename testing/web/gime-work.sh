@@ -5,14 +5,25 @@ if test $# -lt 1; then
 
 Usage:
 
-    $0 <summarydir> [ <repodir> [ <first-commit> ] ]
+    $0 <summarydir> [ <repodir> [ <earliest_commit> ] ]
 
-Search [<first-comit>..HEAD] for the next commit to test.  First
-choice is HEAD; second choice is something "interesting" such as a tag
-or branch (see git-interesting.sh); and the third choice is to split
-the longest run of untested commits.
+Iterate through [<earliest_commit>..HEAD] identifying the next next commit
+to test.
 
-On STDOUT, print the hash of the selected commit.
+On STDOUT, print the hash of the next commit to test.  The first of
+the following is chosen:
+
+  - <earliest_commit>
+    presumably it was specified for a reason
+
+  - HEAD
+
+  - a tag
+
+  - a branch/merge point
+
+  - an "interesting" commit selected by splitting the longest run of
+    untested commits
 
 On STDERR, in addition to random debug lines, list the status of all
 commits using the format:
@@ -20,12 +31,13 @@ commits using the format:
     (TESTED|UNTESTED): <resultdir> <hash> <interesting> <index> <run-length> <bias>
 
 (see git-interesting.sh for <interesting>'s value)
+(see earliest-commit.sh for <earliest_commit>'s value)
 
 EOF
   exit 1
 fi
 
-webdir=$(cd $(dirname $0) && pwd)
+bindir=$(cd $(dirname $0) && pwd)
 
 # <summarydir>
 if test $# -gt 0 ; then
@@ -42,17 +54,18 @@ if test $# -gt 0 ; then
 	echo "could not change-directory to <repodir> ${repodir}" 1>&2
 	exit 1
     }
-fi
-
-# <first-commit>
-if test $# -gt 0 ; then
-    first_commit=$1 ; shift
 else
-    first_commit=$(${webdir}/earliest-commit.sh ${summarydir})
+    repodir=.
 fi
-first_commit=$(git show --no-patch --format=%H ${first_commit})
 
-branch=$(${webdir}/gime-git-branch.sh .)
+# <earliest_commit>
+if test $# -gt 0 ; then
+    earliest_commit=$(git rev-parse ${1}^{}) ; shift
+else
+    earliest_commit=$(${bindir}/earliest-commit.sh ${summarydir})
+fi
+
+branch=$(${bindir}/gime-git-branch.sh .)
 remote=$(git config --get branch.${branch}.remote)
 
 # Find the longest untested run of commits.  Use a bias to prefer
@@ -62,6 +75,10 @@ run=""
 index=0
 point_count=0
 
+# non-zero index indicates untested
+earliest_index=0
+
+# non-zero index indicates untested
 head_commit=
 head_index=0
 
@@ -84,11 +101,11 @@ while read commits ; do
 
     # See of the commit has a test result directory?
     #
-    # Git's idea of how long an abrievated hash needs to be keeps
-    # growing.
+    # Git's idea of how long an abrievated hash is keeps growing.
 
     resultdir=
     for h in ${commit} \
+		 $(expr ${commit} : '\(.............\).*') \
 		 $(expr ${commit} : '\(............\).*') \
 		 $(expr ${commit} : '\(...........\).*') \
 		 $(expr ${commit} : '\(..........\).*') \
@@ -122,6 +139,14 @@ while read commits ; do
 	# printing an analysis of all the commits.
     fi
 
+    # deal with earliest_commit
+
+    if test "${commit}" == "${earliest_commit}" ; then
+	if test -z "${resultdir}" ; then
+	    earliest_index=${index}
+	fi
+    fi
+
     # Find out how interesting the commit is, and why.  list the
     # results on stderr.
     #
@@ -130,7 +155,7 @@ while read commits ; do
     # subset of the less interesting results (interesting results have
     # a colon).  See README.txt.
 
-    if interesting=$(${webdir}/git-interesting.sh ${commit}) ; then
+    if interesting=$(${bindir}/git-interesting.sh ${repodir} ${commit}) ; then
 	uninteresting=false
     else
 	uninteresting=true
@@ -213,23 +238,30 @@ while read commits ; do
 done < <(git rev-list \
 	     --topo-order \
 	     --children \
-	     ${first_commit}..${remote} ; echo ${first_commit})
+	     ${earliest_commit}..${remote} ; echo ${earliest_commit})
 
 # Dump the results
-# ${point^^} is upper case
+# ${point^^} converts ${point} to upper case
 
 echo HEAD ${head_commit} at ${head_index} 1>&2
-echo "${point^^} ${point_commit} at ${point_index} rank ${point_rank}" 1>&2
+echo ${point^^}POINT ${point_commit} at ${point_index} rank ${point_rank} 1>&2
+echo TAG ${tag} ${tag_commit} at ${tag_index} 1>&2
 echo LONGEST ${longest_commit} at ${longest_index} length ${longest_length} 1>&2
+echo EARLIEST ${earliest_commit} at ${earliest_index} 1>&2
 
 # Now which came first?
 
 print_selected() {
     echo selecting $1 at $2 1>&2
-    ( git show --no-patch $2 ) 1>&2
+    ( git log $2^..$2 ) 1>&2
     echo $2
     exit 0
 }
+
+# earliest
+if test "${earliest_index}" -gt 0 ; then
+    print_selected earliest "${earliest_commit}"
+fi
 
 # head
 if test ${head_index} -gt 0 ; then
@@ -238,7 +270,7 @@ fi
 
 # any tag
 if test "${tag_index}" -gt 0 ; then
-    print_selected tag:${tag} "${point_commit}"
+    print_selected tag:${tag} "${tag_commit}"
 fi
 
 # any branch/merge is untested?

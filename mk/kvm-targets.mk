@@ -211,7 +211,7 @@ KVM_LIBVIRT_HOSTS = $(notdir $(wildcard testing/libvirt/vm/*[a-z]))
 KVM_OPENBSD_HOSTS = $(filter openbsd%, $(KVM_LIBVIRT_HOSTS))
 KVM_LINUX_HOSTS = $(filter-out $(KVM_BASIC_HOSTS), $(filter-out openbsd%, $(KVM_LIBVIRT_HOSTS)))
 KVM_BASIC_HOSTS = nic
-KVM_TEST_HOSTS ?= $(KVM_LINUX_HOSTS) $(KVM_BASIC_HOSTS)
+KVM_TEST_HOSTS ?= $(KVM_LINUX_HOSTS) $(KVM_BASIC_HOSTS) $(KVM_OPENBSD_HOSTS)
 
 KVM_LOCAL_HOSTS = $(sort $(KVM_BUILD_HOST) $(KVM_TEST_HOSTS))
 
@@ -302,17 +302,23 @@ $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)entropy-ok: $(KVM_BOOT_FILE) | $(KVM_LOCALDIR
 
 KVM_QEMUDIR ?= /var/lib/libvirt/qemu
 
+#
+# Use $(KVM_BOOT_FILE) to trigger a check that the qemudir is still ok.
+#
+# (assumes that the machine is rebooted after a qemu update)
+#
+
 $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok: $(KVM_BOOT_FILE) | $(KVM_LOCALDIR)
-	echo $(KVM_BOOT_FILE)
 	@if ! test -w $(KVM_QEMUDIR) ; then				\
 		echo ;							\
-		echo  The directory:					\
+		echo "  The directory:" ;				\
 		echo ;							\
-		echo      $(KVM_QEMUDIR) ;				\
+		echo "     $(shell ls -ld $(KVM_QEMUDIR))" ;		\
 		echo ;							\
-		echo  is not writeable. ;				\
-		echo  This will break virsh which is ;			\
-		echo  used to manipulate the domains. ;			\
+		echo "  is not writeable." ;				\
+		echo ;							\
+		echo "  This will break virsh which is"	;		\
+		echo "  used to manipulate the domains." ;		\
 		echo ;							\
 		false ;							\
 	fi
@@ -893,10 +899,10 @@ $(KVM_BUILD_DISK_CLONES): \
 KVM_OPENBSD_DISK_CLONES = $(addsuffix .qcow2, $(addprefix $(KVM_LOCALDIR)/, $(KVM_OPENBSD_DOMAIN_CLONES)))
 $(KVM_OPENBSD_DISK_CLONES): \
 		| \
-		$(KVM_LOCALDIR)/$(KVM_BSD_BASE_NAME).qcow2 \
+		$(KVM_POOLDIR)/$(KVM_BSD_BASE_DOMAIN).qcow2 \
 		$(KVM_LOCALDIR)
 	: copy-build-disk $@
-	$(call shadow-kvm-disk,$(KVM_LOCALDIR)/$(KVM_BSD_BASE_NAME).qcow2,$@.tmp)
+	$(call shadow-kvm-disk,$(KVM_POOLDIR)/$(KVM_BSD_BASE_DOMAIN).qcow2,$@.tmp)
 	mv $@.tmp $@
 
 #
@@ -992,7 +998,7 @@ define uninstall-kvm-domain-DOMAIN
 	rm -f $(2)/$(1).img
 endef
 
-$(foreach domain, $(KVM_BASE_DOMAIN), \
+$(foreach domain, $(KVM_BASE_DOMAIN) $(KVM_BSD_BASE_DOMAIN), \
 	$(eval $(call uninstall-kvm-domain-DOMAIN,$(domain),$(KVM_POOLDIR))))
 $(foreach domain, $(KVM_BUILD_DOMAIN) $(KVM_TEST_DOMAINS), \
 	$(eval $(call uninstall-kvm-domain-DOMAIN,$(domain),$(KVM_LOCALDIR))))
@@ -1121,35 +1127,31 @@ endif
 .PHONY: kvm-install
 kvm-install: $(foreach domain, $(KVM_BUILD_DOMAIN_CLONES), uninstall-kvm-domain-$(domain))
 	$(MAKE) kvm-$(KVM_BUILD_DOMAIN)-install
-	$(MAKE) $(foreach domain, $(KVM_BUILD_DOMAIN_CLONES) $(KVM_BASIC_DOMAINS), install-kvm-domain-$(domain))
+	$(MAKE) $(foreach domain, $(KVM_BUILD_DOMAIN_CLONES) $(KVM_BASIC_DOMAINS) $(KVM_OPENBSD_DOMAIN_CLONES), install-kvm-domain-$(domain))
 	$(MAKE) kvm-keys
 
-define kvm-base-openbsd
-	$(call destroy-kvm-domain,$(KVM_BSD_BASE_NAME))
-	sed -e "s:@@TESTINGDIR@@:$(KVM_TESTINGDIR):" $(KVM_TESTINGDIR)/libvirt/BSD/rc.firsttime > $(KVM_POOLDIR)/rc.firsttime
-	sh $(KVM_TESTINGDIR)/libvirt/BSD/nfs.sh
-	cp $(KVM_TESTINGDIR)/libvirt/BSD/*.conf $(KVM_POOLDIR)/
-	sudo env -i growisofs -M "$(KVM_POOLDIR)/install67.iso" -l -R -graft-points /install.conf="$(KVM_POOLDIR)/install.conf" /etc/boot.conf="$(KVM_POOLDIR)/boot.conf" /rc.firsttime="$(KVM_POOLDIR)/rc.firsttime"
-	$(KVM_PYTHON) $(KVM_TESTINGDIR)/utils/openbsdinstall.py $(KVM_BSD_BASE_NAME) \
-		"sudo virt-install --name=$(KVM_BSD_BASE_NAME) --virt-type=kvm --memory=2048,maxmemory=2048 \
-		--vcpus=1,maxvcpus=1 --cpu host --os-variant=$(VIRT_BSD_VARIANT) \
-		--cdrom=$(KVM_POOLDIR)/install67.iso \
-		--disk path=$(KVM_POOLDIR)/$(KVM_BSD_BASE_NAME).qcow2,size=4,bus=virtio,format=qcow2 \
-		--graphics none --serial pty --check path_in_use=off"
-endef
 $(KVM_POOLDIR)/$(KVM_BSD_ISO):| $(KVM_POOLDIR)
 	wget --output-document $@.tmp --no-clobber -- $(KVM_ISO_URL_BSD)
 	mv $@.tmp $@
 
 .PHONY: kvm-uninstall-openbsd
-kvm-uninstall-openbsd:
-	$(call destroy-kvm-domain,$(KVM_BSD_BASE_NAME))
-	rm -f $(KVM_LOCALDIR)/$(KVM_BSD_BASE_NAME).qcow2
+kvm-uninstall-openbsd: $(foreach domain, $(KVM_BSD_BASE_DOMAIN) $(KVM_OPENBSD_DOMAIN_CLONES), uninstall-kvm-domain-${domain})
 .PHONY: kvm-openbsd
-kvm-openbsd: $(KVM_LOCALDIR)/$(KVM_BSD_BASE_NAME).qcow2
-$(KVM_LOCALDIR)/$(KVM_BSD_BASE_NAME).qcow2: $(KVM_TESTINGDIR)/utils/openbsdinstall.py $(KVM_POOLDIR)/$(KVM_BSD_ISO)
-	$(make kvm-uninstall-openbsd)
-	$(call kvm-base-openbsd)
+kvm-openbsd: $(KVM_POOLDIR)/$(KVM_BSD_BASE_DOMAIN).qcow2
+$(KVM_POOLDIR)/$(KVM_BSD_BASE_DOMAIN).qcow2: | $(KVM_TESTINGDIR)/utils/openbsdinstall.py $(KVM_POOLDIR)/$(KVM_BSD_ISO)
+	$(MAKE) kvm-uninstall-openbsd
+	$(call destroy-kvm-domain,$(KVM_BSD_BASE_DOMAIN))
+	sed -e "s:@@TESTINGDIR@@:$(KVM_TESTINGDIR):" $(KVM_TESTINGDIR)/libvirt/BSD/rc.firsttime > $(KVM_POOLDIR)/rc.firsttime
+	sh $(KVM_TESTINGDIR)/libvirt/BSD/nfs.sh
+	cp $(KVM_TESTINGDIR)/libvirt/BSD/*.conf $(KVM_POOLDIR)/
+	sudo env -i growisofs -M "$(KVM_POOLDIR)/install67.iso" -l -R -graft-points /install.conf="$(KVM_POOLDIR)/install.conf" /etc/boot.conf="$(KVM_POOLDIR)/boot.conf" /rc.firsttime="$(KVM_POOLDIR)/rc.firsttime"
+	$(KVM_PYTHON) $(KVM_TESTINGDIR)/utils/openbsdinstall.py $(KVM_BSD_BASE_DOMAIN) \
+		"sudo virt-install --name=$(KVM_BSD_BASE_DOMAIN) --virt-type=kvm --memory=2048,maxmemory=2048 \
+		--vcpus=1,maxvcpus=1 --cpu host --os-variant=$(VIRT_BSD_VARIANT) \
+		--cdrom=$(KVM_POOLDIR)/install67.iso \
+		--disk path=$(KVM_POOLDIR)/$(KVM_BSD_BASE_DOMAIN).qcow2,size=4,bus=virtio,format=qcow2 \
+		--network=network:$(KVM_GATEWAY),model=virtio \
+		--graphics none --serial pty --check path_in_use=off"
 
 .PHONY: kvm-bisect
 kvm-bisect:

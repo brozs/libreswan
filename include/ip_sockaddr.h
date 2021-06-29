@@ -1,4 +1,4 @@
-/* unix socaddr mashup, for libreswan
+/* unix sockaddr mashup, for libreswan
 
  * Copyright (C) 2019 Andrew Cagney <cagney@gnu.org>
  *
@@ -26,7 +26,7 @@
 #include <ip_endpoint.h>
 
 /*
- * Size the socaddr buffer big enough for all known
+ * Size the sockaddr buffer big enough for all known
  * alternatives.  On linux, at least, this isn't true:
  *
  * passert(sizeof(struct sockaddr) >= sizeof(struct sockaddr_in));
@@ -54,10 +54,11 @@ extern const ip_sockaddr unset_sockaddr;
  * if a port is needed then, presumably, it's an endpoint?
  */
 
-ip_sockaddr sockaddr_from_address(const ip_address *address);
-ip_sockaddr sockaddr_from_endpoint(const ip_endpoint *endpoint);
+ip_sockaddr sockaddr_from_address(const ip_address address);
+ip_sockaddr sockaddr_from_address_port(const ip_address address, const ip_port port);
+ip_sockaddr sockaddr_from_endpoint(const ip_endpoint endpoint);
 
-err_t sockaddr_to_endpoint(const struct ip_protocol *protocol,
-			   const ip_sockaddr *sa, ip_endpoint *endpoint);
+err_t sockaddr_to_address_port(const ip_sockaddr sa,
+			       ip_address *address, ip_port *port);
 
 #endif

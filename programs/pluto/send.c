@@ -66,11 +66,11 @@
  * for NATT.  It accepts two chunks because this avoids double-copying.
  */
 
-static bool send_chunks(const char *where, bool just_a_keepalive,
+static bool send_shunks(const char *where, bool just_a_keepalive,
 			so_serial_t serialno, /* can be SOS_NOBODY */
 			const struct iface_endpoint *interface,
 			ip_endpoint remote_endpoint,
-			chunk_t a, chunk_t b,
+			shunk_t a, shunk_t b,
 			struct logger *logger)
 {
 	/* NOTE: on system with limited stack, buf could be made static */
@@ -104,7 +104,7 @@ static bool send_chunks(const char *where, bool just_a_keepalive,
 	 * hsetportof(port,addr) where addr is invalid also get an
 	 * expecation failed message.
 	 */
-	if (!endpoint_is_specified(&remote_endpoint)) {
+	if (!endpoint_is_specified(remote_endpoint)) {
 		/* not asserting, who knows what nonsense a user can generate */
 		endpoint_buf b;
 		llog(RC_LOG, logger,
@@ -202,7 +202,7 @@ static bool send_chunks(const char *where, bool just_a_keepalive,
 			    str_endpoint(&interface->local_endpoint, &ib),
 			    str_endpoint(&remote_endpoint, &b));
 
-		ip_sockaddr remote_sa = sockaddr_from_endpoint(&remote_endpoint);
+		ip_sockaddr remote_sa = sockaddr_from_endpoint(remote_endpoint);
 		ssize_t wlen = sendto(interface->fd, ptr, len, 0, &remote_sa.sa.sa, remote_sa.len);
 		if (wlen != (ssize_t)len) {
 			if (!just_a_keepalive) {
@@ -220,18 +220,18 @@ static bool send_chunks(const char *where, bool just_a_keepalive,
 
 bool send_pbs_out_using_md(struct msg_digest *md, const char *where, struct pbs_out *packet)
 {
-	return send_chunks(where, false, SOS_NOBODY,
+	return send_shunks(where, false, SOS_NOBODY,
 			   md->iface, md->sender,
-			   same_out_pbs_as_chunk(packet), EMPTY_CHUNK,
+			   same_pbs_out_as_shunk(packet), null_shunk,
 			   md->md_logger);
 }
 
 bool send_chunks_using_state(struct state *st, const char *where,
 			     chunk_t chunk_a, chunk_t chunk_b)
 {
-	return send_chunks(where, false, st->st_serialno,
+	return send_shunks(where, false, st->st_serialno,
 			   st->st_interface, st->st_remote_endpoint,
-			   chunk_a, chunk_b,
+			   HUNK_AS_SHUNK(chunk_a), HUNK_AS_SHUNK(chunk_b),
 			   st->st_logger);
 }
 
@@ -242,7 +242,10 @@ bool send_chunk_using_state(struct state *st, const char *where, chunk_t packet)
 
 bool send_pbs_out_using_state(struct state *st, const char *where, struct pbs_out *pbs)
 {
-	return send_chunk_using_state(st, where, same_out_pbs_as_chunk(pbs));
+	return send_shunks(where, /*just_a_keepalive?*/false,
+			   st->st_serialno, st->st_interface, st->st_remote_endpoint,
+			   same_pbs_out_as_shunk(pbs), null_shunk,
+			   st->st_logger);
 }
 
 /*
@@ -254,8 +257,8 @@ bool send_keepalive_using_state(struct state *st, const char *where)
 {
 	static unsigned char ka_payload = 0xff;
 
-	return send_chunks(where, true, st->st_serialno, st->st_interface,
+	return send_shunks(where, true, st->st_serialno, st->st_interface,
 			   st->st_remote_endpoint,
-			   THING_AS_CHUNK(ka_payload), EMPTY_CHUNK,
+			   THING_AS_SHUNK(ka_payload), null_shunk,
 			   st->st_logger);
 }

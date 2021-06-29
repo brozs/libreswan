@@ -194,6 +194,12 @@ enum global_timer {
 	EVENT_PROCESS_KERNEL_QUEUE,	/* non-netkey */
 };
 
+extern const struct enum_names global_timer_names;
+
+/*
+ * State based events and timers.
+ */
+
 enum event_type {
 	EVENT_NULL,			/* non-event */
 
@@ -201,29 +207,29 @@ enum event_type {
 
 	/* events associated with states */
 
-	EVENT_SO_DISCARD,		/* v1/v2 discard unfinished state object */
 	EVENT_RETRANSMIT,		/* v1/v2 retransmit IKE packet */
 
-	/*
-	 * For IKEv2 'replace' is really either a re-key a full
-	 * replace, or expire.  IKEv1 should be the same but isn't.
-	 */
-	EVENT_SA_REKEY,			/* v2 SA rekey event */
-	EVENT_SA_REPLACE,		/* v1/v2 SA replacement event */
-	EVENT_SA_EXPIRE,		/* v1/v2 SA expiration event */
-
-	EVENT_v1_SEND_XAUTH,		/* v1 send xauth request */
-	EVENT_v1_SA_REPLACE_IF_USED,	/* v1 SA replacement event */
 	EVENT_DPD,			/* v1 dead peer detection */
 	EVENT_DPD_TIMEOUT,		/* v1 dead peer detection timeout */
 	EVENT_CRYPTO_TIMEOUT,		/* v1/v2 after some time, give up on crypto helper */
 	EVENT_PAM_TIMEOUT,		/* v1/v2 give up on PAM helper */
 
+	/*
+	 * For IKEv2 'replace' is really either a re-key a full
+	 * replace, or expire.  IKEv1 should be the same but isn't.
+	 */
+	EVENT_SA_DISCARD,		/* v1/v2 discard unfinished state object */
+	EVENT_SA_REKEY,			/* v2 SA rekey event */
+	EVENT_SA_REPLACE,		/* v1/v2 SA replacement event */
+	EVENT_SA_EXPIRE,		/* v1/v2 SA expiration event */
+
+	EVENT_v1_SEND_XAUTH,		/* v1 send xauth request */
+	EVENT_v1_REPLACE_IF_USED,	/* v1 replacement event */
+
 	EVENT_v2_LIVENESS,		/* for dead peer detection */
-	EVENT_v2_RELEASE_WHACK,		/* release the whack fd */
-	EVENT_v2_INITIATE_CHILD,	/* initiate a IPsec child */
 	EVENT_v2_ADDR_CHANGE,		/* process IP address deletion */
 	EVENT_v2_REDIRECT,		/* initiate new IKE exchange on new address */
+
 	EVENT_RETAIN,			/* don't change the previous event */
 };
 
@@ -325,7 +331,7 @@ typedef enum {
 	STF_OK,                 /*    yes        no     message? tbd? */
 	STF_INTERNAL_ERROR,     /*     no        no      never   tbd? */
 	STF_V2_DELETE_EXCHANGE_INITIATOR_IKE_SA,
-                                /*   forced    maybe     maybe  'success' */
+				/*   forced    maybe     maybe  'success' */
 	STF_FATAL,		/*     no      always    never   fail */
 	STF_FAIL,       	/*     no      maybe?    maybe?  fail */
 	STF_ROOF = STF_FAIL + 65536 /* see RFC and above */
@@ -361,9 +367,6 @@ typedef enum {
 #define IKE_V2_OVERLAPPING_WINDOW_SIZE	1 /* our default for rfc 7296 # 2.3 */
 
 #define PPK_ID_MAXLEN 64 /* fairly arbitrary */
-
-/* could overflow size uint32_t */
-#define IPV6_MIN_POOL_PREFIX_LEN 96
 
 /*
  * debugging settings: a set of selections for reporting These would
@@ -614,7 +617,6 @@ extern struct keywords message_role_names;
 enum sa_role {
 	SA_INITIATOR = 1,
 	SA_RESPONDER = 2,
-#define SA_ROLE_ROOF 3
 };
 
 extern struct keywords sa_role_names;
@@ -784,7 +786,7 @@ enum ikev1_natt_policy {
 enum four_options {
 	fo_never   = 0,         /* do not propose, do not permit */
 	fo_permit  = 1,         /* do not propose, but permit peer to propose */
-	fo_propose = 2,         /* propose, and permit, but do not insist  */
+	fo_propose = 2,         /* propose, and permit, but do not insist */
 	fo_insist  = 3          /* propose, and only accept if peer agrees */
 };
 
@@ -848,6 +850,15 @@ size_t jam_policy(struct jambuf *buf, lset_t policy);
  * Changes to sa_policy_bits must be reflected in #defines below it and
  * in sa_policy_bit_names.
  */
+
+enum shunt_policy {
+	SHUNT_DEFAULT, /* TRAP or NONE */
+	SHUNT_PASS,
+	SHUNT_DROP,
+	SHUNT_REJECT,
+	SHUNT_POLICY_ROOF,
+};
+
 enum sa_policy_bits {
 	/*
 	 * XXX: Do not re-order or re-number the following pair.  Bad
@@ -887,10 +898,10 @@ enum sa_policy_bits {
 #define POLICY_SHUNT_SHIFT	POLICY_SHUNT0_IX
 #define POLICY_SHUNT_MASK	LRANGE(POLICY_SHUNT0_IX, POLICY_SHUNT1_IX)
 
-#define POLICY_SHUNT_TRAP	(0 * LELEM(POLICY_SHUNT0_IX))	/* default: negotiate */
-#define POLICY_SHUNT_PASS	(1 * LELEM(POLICY_SHUNT0_IX))
-#define POLICY_SHUNT_DROP	(2 * LELEM(POLICY_SHUNT0_IX))
-#define POLICY_SHUNT_REJECT	(3 * LELEM(POLICY_SHUNT0_IX))
+#define POLICY_SHUNT_TRAP	(SHUNT_DEFAULT * LELEM(POLICY_SHUNT0_IX))	/* default: negotiate */
+#define POLICY_SHUNT_PASS	(SHUNT_PASS * LELEM(POLICY_SHUNT0_IX))
+#define POLICY_SHUNT_DROP	(SHUNT_DROP * LELEM(POLICY_SHUNT0_IX))
+#define POLICY_SHUNT_REJECT	(SHUNT_REJECT * LELEM(POLICY_SHUNT0_IX))
 
 	/* fail attributes: what to do with failed negotiation (2 bits) */
 	POLICY_FAIL0_IX,
@@ -899,10 +910,10 @@ enum sa_policy_bits {
 #define POLICY_FAIL_SHIFT	POLICY_FAIL0_IX
 #define POLICY_FAIL_MASK	LRANGE(POLICY_FAIL0_IX, POLICY_FAIL1_IX)
 
-#define POLICY_FAIL_NONE	(0 * LELEM(POLICY_FAIL0_IX)) /* default */
-#define POLICY_FAIL_PASS	(1 * LELEM(POLICY_FAIL0_IX))
-#define POLICY_FAIL_DROP	(2 * LELEM(POLICY_FAIL0_IX))
-#define POLICY_FAIL_REJECT	(3 * LELEM(POLICY_FAIL0_IX))
+#define POLICY_FAIL_NONE	(SHUNT_DEFAULT * LELEM(POLICY_FAIL0_IX)) /* default */
+#define POLICY_FAIL_PASS	(SHUNT_PASS * LELEM(POLICY_FAIL0_IX))
+#define POLICY_FAIL_DROP	(SHUNT_DROP * LELEM(POLICY_FAIL0_IX))
+#define POLICY_FAIL_REJECT	(SHUNT_REJECT * LELEM(POLICY_FAIL0_IX))
 
 	/* connection policy
 	 * Other policies could vary per state object.  These live in connection.
@@ -1003,7 +1014,7 @@ enum sa_policy_bits {
  */
 
 #define NEGOTIATE_AUTH_HASH_SHA1		LELEM(IKEv2_HASH_ALGORITHM_SHA1)	/* rfc7427 does responder support SHA1? */
-#define NEGOTIATE_AUTH_HASH_SHA2_256		LELEM(IKEv2_HASH_ALGORITHM_SHA2_256)	/* rfc7427 does responder support SHA2-256?  */
+#define NEGOTIATE_AUTH_HASH_SHA2_256		LELEM(IKEv2_HASH_ALGORITHM_SHA2_256)	/* rfc7427 does responder support SHA2-256? */
 #define NEGOTIATE_AUTH_HASH_SHA2_384		LELEM(IKEv2_HASH_ALGORITHM_SHA2_384)	/* rfc7427 does responder support SHA2-384? */
 #define NEGOTIATE_AUTH_HASH_SHA2_512		LELEM(IKEv2_HASH_ALGORITHM_SHA2_512)	/* rfc7427 does responder support SHA2-512? */
 #define NEGOTIATE_AUTH_HASH_IDENTITY		LELEM(IKEv2_HASH_ALGORITHM_IDENTITY)	/* rfc4307-bis does responder support IDENTITY? */

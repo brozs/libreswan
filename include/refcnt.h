@@ -23,99 +23,85 @@
 #include "lswcdefs.h"		/* for MUST_USE_RESULT */
 #include "where.h"
 
-typedef struct {
-	unsigned count;
+struct refcnt_base {
+	const char *what;
+	void (*free)(void *object, where_t where);
+};
+
+typedef struct refcnt {
+	volatile unsigned count;
+	const struct refcnt_base *base;
 } refcnt_t;
 
 /*
  * Initialize the refcnt.
  *
- * Note that ref_init(O,HERE) breaks as HERE contains braces.
+ * Note that ref_init(OBJ,HERE) breaks as HERE contains braces.
  */
 
-void refcnt_init(const char *what, const void *pointer,
-		 refcnt_t *refcnt, where_t where);
+void refcnt_init(const void *pointer, struct refcnt *refcnt,
+		 const struct refcnt_base *base, where_t where);
 
-#define refcnt_alloc(THING, WHERE)				       \
+#define refcnt_overalloc(THING, EXTRA, FREE, WHERE)		       \
 	({							       \
-		THING *t_ = alloc_bytes(sizeof(THING), (WHERE).func);  \
-		refcnt_init(#THING, t_, &t_->refcnt, WHERE);	       \
+		static const struct refcnt_base b_ = {		       \
+			.what = #THING,				       \
+			.free = FREE,				       \
+		};						       \
+		THING *t_ = alloc_bytes(sizeof(THING) + (EXTRA), b_.what); \
+		refcnt_init(t_, &t_->refcnt, &b_, WHERE);	       \
 		t_;						       \
 	})
+
+#define refcnt_alloc(THING, FREE, WHERE)			       \
+	refcnt_overalloc(THING, /*extra*/0, FREE, WHERE)
+
+/* look at refcnt atomically */
+unsigned refcnt_peek(refcnt_t *refcnt);
 
 /*
  * Add a reference.
  *
- * Note that ref_add(O,HERE) breaks as HERE contains braces.
+ * Note that ref_add(OBJ,HERE) breaks as HERE contains braces.
  */
 
-void refcnt_add(const char *what, const void *pointer,
-		refcnt_t *refcnt, where_t where);
+void refcnt_addref(const char *what, const void *pointer, refcnt_t *refcnt, where_t where);
 
-#define refcnt_addref(O, WHERE)						\
+#define addref(OBJ, WHERE)						\
 	({								\
-		if ((O) == NULL) {					\
-			dbg("addref "#O"@NULL "PRI_WHERE"", pri_where(WHERE)); \
-		} else {						\
-			refcnt_add(#O, O, &(O)->refcnt, WHERE);		\
-		}							\
-		(O); /* result */					\
-	})
-
-#define add_ref(O)							\
-	({								\
-		where_t here_ = HERE;					\
-		refcnt_addref(O, here_);				\
+		typeof(OBJ) o_ = OBJ; /* evalutate once */		\
+		refcnt_addref(#OBJ, o_, o_ == NULL ? NULL : &o_->refcnt, WHERE); \
+		o_; /* result */					\
 	})
 
 /*
  * Delete a reference.
  *
- * Note that ref_delete(O,FREE,HERE) breaks as HERE contains braces.
+ * Note that ref_delete(OBJ,HERE) breaks as HERE contains braces.
  */
 
-bool refcnt_delete(const char *what, const void *pointer,
-		   refcnt_t *refcnt, where_t where) MUST_USE_RESULT;
+void refcnt_delref(const char *what, void *pointer, struct refcnt *refcnt, where_t where);
 
-#define refcnt_delref(O, FREE, WHERE)					\
+#define delref(OBJ, WHERE)						\
 	{								\
-		if (*(O) == NULL) {					\
-			dbg("delref "#O"@NULL "PRI_WHERE"", pri_where(WHERE)); \
-		} else if (refcnt_delete(#O, *(O), &(*(O))->refcnt,	\
-					 WHERE)) {			\
-			FREE(O, WHERE);					\
-			passert(*(O) == NULL);				\
-		} else {						\
-			*(O) = NULL; /* kill pointer */			\
-		}							\
-	}
-
-#define delete_ref(O, FREE)						\
-	{								\
-		where_t here_ = HERE;					\
-		refcnt_delref(O, FREE, here_);				\
+		typeof(OBJ) o_ = OBJ;					\
+		refcnt_delref(#OBJ, *o_, *o_ == NULL ? NULL : &(*o_)->refcnt, WHERE); \
+		*o_ = NULL; /*kill pointer */				\
 	}
 
 /*
  * Replace an existing reference.
  *
- * Note that ref_replace(O,NEW,FREE,HERE) breaks as HERE contains
+ * Note that ref_replace(OBJ,NEW,FREE,HERE) breaks as HERE contains
  * braces.
  */
 
-#define refcnt_replace(O, NEW, FREE, WHERE)				\
+#define repref(DST, SRC, WHERE)						\
 	{								\
 		/* add new before deleting old */			\
-		ref_add(NEW, WHERE);					\
-		ref_delete(O, FREE, WHERE);				\
-		*(O) = NEW;						\
-	}
-
-#define replace_ref(O, NEW, FREE)					\
-	{								\
-		where_t here_ = HERE;					\
-		/* add new before deleting old */			\
-		refcnt_replace(O, NEW, FREE, here_);			\
+		addref(SRC, WHERE);					\
+		delref(DST, WHERE);					\
+		*(DST) = SRC;						\
 	}
 
 /* for code wanting to use refcnt for normal allocs */

@@ -25,12 +25,12 @@
     USE_AUTHPAM=true \\\
 %{nil}
 
-#global prever dr1
+%global prever dr1
 
 Name: libreswan
 Summary: Internet Key Exchange (IKEv1 and IKEv2) implementation for IPsec
 # version is generated in the release script
-Version: 4.3
+Version: 4.5
 Release: %{?prever:0.}1%{?prever:.%{prever}}%{?dist}
 License: GPLv2
 Url: https://libreswan.org/
@@ -129,9 +129,9 @@ rm -rf %{buildroot}%{_libexecdir}/ipsec/*check
 install -d -m 0755 %{buildroot}%{_rundir}/pluto
 install -d %{buildroot}%{_sbindir}
 
-install -d %{buildroot}%{_sysconfdir}/sysctl.d
+install -d %{buildroot}%{_sysctldir}
 install -m 0644 packaging/fedora/libreswan-sysctl.conf \
-    %{buildroot}%{_sysconfdir}/sysctl.d/50-libreswan.conf
+    %{buildroot}%{_sysctldir}/50-libreswan.conf
 
 echo "include %{_sysconfdir}/ipsec.d/*.secrets" \
     > %{buildroot}%{_sysconfdir}/ipsec.secrets
@@ -170,6 +170,7 @@ certutil -N -d sql:$tmpdir --empty-password
 
 %post
 %systemd_post ipsec.service
+%sysctl_apply 50-libreswan.conf
 
 %preun
 %systemd_preun ipsec.service
@@ -185,7 +186,7 @@ certutil -N -d sql:$tmpdir --empty-password
 %attr(0700,root,root) %dir %{_sysconfdir}/ipsec.d
 %attr(0700,root,root) %dir %{_sysconfdir}/ipsec.d/policies
 %attr(0644,root,root) %config(noreplace) %{_sysconfdir}/ipsec.d/policies/*
-%attr(0644,root,root) %config(noreplace) %{_sysconfdir}/sysctl.d/50-libreswan.conf
+%attr(0644,root,root) %config(noreplace) %{_sysctldir}/50-libreswan.conf
 %attr(0755,root,root) %dir %{_rundir}/pluto
 %attr(0700,root,root) %dir %{_sharedstatedir}/ipsec
 %attr(0700,root,root) %dir %{_sharedstatedir}/ipsec/nss
@@ -198,5 +199,5 @@ certutil -N -d sql:$tmpdir --empty-password
 %doc %{_mandir}/*/*
 
 %changelog
-* Sun Feb 21 2021 Team Libreswan <team@libreswan.org> - 4.3-1
+* Thu Apr 22 2021 Team Libreswan <team@libreswan.org> - 4.4-1
 - Automated build from release tar ball

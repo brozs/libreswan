@@ -67,8 +67,7 @@ static bool parse_secctx_attr(pb_stream *pbs UNUSED, struct state *st)
 	return FALSE;
 }
 #else
-#include "security_selinux.h"
-#include "labeled_ipsec.h"
+#include "ikev1_labeled_ipsec.h"
 #include <linux/xfrm.h> /* for XFRM_SC_DOI_LSM and XFRM_SC_ALG_SELINUX */
 static bool parse_secctx_attr(struct pbs_in *pbs, struct state *st)
 {
@@ -77,7 +76,7 @@ static bool parse_secctx_attr(struct pbs_in *pbs, struct state *st)
 	struct xfrm_user_sec_ctx_ike uctx;
 	diag_t d = pbs_in_struct(pbs, &sec_ctx_desc, &uctx.ctx, sizeof(uctx.ctx), NULL);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return false;
 	}
 
@@ -107,7 +106,7 @@ static bool parse_secctx_attr(struct pbs_in *pbs, struct state *st)
 		return false;
 	}
 
-	if (!se_label_match(sec_label, c->spd.this.sec_label, st->st_logger)) {
+	if (!sec_label_within_range(sec_label, c->spd.this.sec_label, st->st_logger)) {
 		LLOG_JAMBUF(RC_LOG_SERIOUS, st->st_logger, buf) {
 			jam(buf, "received IPsec Security Label '");
 			jam_sanitized_bytes(buf, sec_label.ptr,
@@ -120,10 +119,10 @@ static bool parse_secctx_attr(struct pbs_in *pbs, struct state *st)
 		return false;
 	}
 
-	replace_chunk(&st->st_seen_sec_label, clone_hunk(sec_label, "st_seen_sec_label"));
+	replace_chunk(&st->st_v1_seen_sec_label, clone_hunk(sec_label, "st_seen_sec_label"));
 	if (DBGP(DBG_BASE)) {
 		DBG_dump_hunk("connection security context IPsec Security Label verification succeeded with:",
-			      st->st_seen_sec_label);
+			      st->st_v1_seen_sec_label);
 	}
 	return true;
 }
@@ -482,7 +481,7 @@ static struct db_context *kernel_alg_db_new(struct child_proposals proposals,
 		return NULL;
 	}
 
-	struct db_prop  *prop = db_prop_get(ctx_new);
+	struct db_prop *prop = db_prop_get(ctx_new);
 
 	dbg("%s() will return p_new->protoid=%d, p_new->trans_cnt=%d",
 	    __func__, prop->protoid, prop->trans_cnt);
@@ -789,12 +788,12 @@ static struct db_sa *oakley_alg_mergedb(struct ike_proposals ike_proposals,
 		}
 
 		 if (emp_sp != NULL) {
-			 /*
-			  * Exclude 3des et.al. which do not include
-			  * default key lengths in the proposal.
-			  */
-			 if (algs.enckeylen == 0 &&
-			     !algs.encrypt->keylen_omitted) {
+			/*
+			 * Exclude 3des et.al. which do not include
+			 * default key lengths in the proposal.
+			 */
+			if (algs.enckeylen == 0 &&
+			    !algs.encrypt->keylen_omitted) {
 				const struct encrypt_desc *enc_desc = algs.encrypt;
 				int def_ks = enc_desc->keydeflen;
 				passert(def_ks); /* ike=null not supported */
@@ -950,7 +949,7 @@ bool ikev1_out_sa(pb_stream *outs,
 
 			passert(revised_sadb->prop_conjs->prop_cnt == 1);
 
-			/* construct the IPcomp proposal  */
+			/* construct the IPcomp proposal */
 			ipcomp_trans->transid = IPCOMP_DEFLATE;
 			ipcomp_trans->attrs = NULL;
 			ipcomp_trans->attr_cnt = 0;
@@ -1265,11 +1264,11 @@ bool ikev1_out_sa(pb_stream *outs,
 					if (c->spd.this.sec_label.len != 0) {
 						chunk_t out_label = c->spd.this.sec_label;
 
-						if (st->st_acquired_sec_label.len != 0) {
-							out_label = st->st_acquired_sec_label;
+						if (st->st_v1_acquired_sec_label.len != 0) {
+							out_label = st->st_v1_acquired_sec_label;
 						} else {
-							if (st->st_seen_sec_label.len !=0)
-								out_label = st->st_seen_sec_label;
+							if (st->st_v1_seen_sec_label.len !=0)
+								out_label = st->st_v1_seen_sec_label;
 						}
 
 						pb_stream val_pbs;
@@ -1659,7 +1658,7 @@ notification_t parse_isakmp_sa_body(pb_stream *sa_pbs,		/* body of input SA Payl
 
 	d = pbs_in_struct(sa_pbs, &ipsec_sit_desc, &ipsecdoisit, sizeof(ipsecdoisit), NULL);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return SITUATION_NOT_SUPPORTED;	/* reject whole SA */
 	}
 
@@ -1683,7 +1682,7 @@ notification_t parse_isakmp_sa_body(pb_stream *sa_pbs,		/* body of input SA Payl
 			  &proposal, sizeof(proposal),
 			  &proposal_pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return PAYLOAD_MALFORMED;	/* reject whole SA */
 	}
 
@@ -1731,7 +1730,7 @@ notification_t parse_isakmp_sa_body(pb_stream *sa_pbs,		/* body of input SA Payl
 		uint8_t junk_spi[MAX_ISAKMP_SPI_SIZE];
 		diag_t d = pbs_in_raw(&proposal_pbs, junk_spi, proposal.isap_spisize, "Oakley SPI");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, st->st_logger, &d, "%s", "");
 			return PAYLOAD_MALFORMED;	/* reject whole SA */
 		}
 	} else {
@@ -1773,7 +1772,7 @@ notification_t parse_isakmp_sa_body(pb_stream *sa_pbs,		/* body of input SA Payl
 		diag_t d = pbs_in_struct(&proposal_pbs, &isakmp_isakmp_transform_desc,
 					 &trans, sizeof(trans), &trans_pbs);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			return BAD_PROPOSAL_SYNTAX;	/* reject whole SA */
 		}
 
@@ -1821,7 +1820,7 @@ notification_t parse_isakmp_sa_body(pb_stream *sa_pbs,		/* body of input SA Payl
 			diag_t d = pbs_in_struct(&trans_pbs, &isakmp_oakley_attribute_desc,
 						 &a, sizeof(a), &attr_pbs);
 			if (d != NULL) {
-				log_diag(RC_LOG_SERIOUS, st->st_logger, &d, "invalid transform: ");
+				llog_diag(RC_LOG_SERIOUS, st->st_logger, &d, "invalid transform: ");
 				return BAD_PROPOSAL_SYNTAX;	/* reject whole SA */
 			}
 
@@ -1926,7 +1925,7 @@ psk_common:
 						UGH("policy does not allow OAKLEY_PRESHARED_KEY authentication");
 					} else {
 						/* check that we can find a proper preshared secret */
-						pss = get_connection_psk(c, st->st_logger);
+						pss = get_connection_psk(c);
 
 						if (pss == NULL) {
 							id_buf mid;
@@ -2287,7 +2286,7 @@ bool init_aggr_st_oakley(struct state *st, lset_t policy)
 	const struct db_prop_conj *cprop = &revised_sadb->prop_conjs[0];
 
 	passert(cprop->prop_cnt == 1);
-	const struct db_prop  *prop = &cprop->props[0];
+	const struct db_prop *prop = &cprop->props[0];
 
 	const struct db_trans *trans = &prop->trans[0];
 
@@ -2325,7 +2324,7 @@ bool init_aggr_st_oakley(struct state *st, lset_t policy)
 	passert(ta.ta_prf != NULL);
 
 	passert(auth->type.oakley == OAKLEY_AUTHENTICATION_METHOD);
-	ta.auth   = auth->val;         /* OAKLEY_AUTHENTICATION_METHOD */
+	ta.auth = auth->val;         /* OAKLEY_AUTHENTICATION_METHOD */
 
 	passert(grp->type.oakley == OAKLEY_GROUP_DESCRIPTION);
 	ta.ta_dh = ikev1_get_ike_dh_desc(grp->val); /* OAKLEY_GROUP_DESCRIPTION */
@@ -2382,7 +2381,7 @@ static bool parse_ipsec_transform(struct isakmp_transform *trans,
 
 	diag_t d = pbs_in_struct(prop_pbs, trans_desc, trans, sizeof(*trans), trans_pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return false;
 	}
 
@@ -2448,7 +2447,7 @@ static bool parse_ipsec_transform(struct isakmp_transform *trans,
 		diag_t d = pbs_in_struct(trans_pbs, &isakmp_ipsec_attribute_desc,
 					 &a, sizeof(a), &attr_pbs);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			return FALSE;
 		}
 
@@ -2876,7 +2875,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 	/* Situation */
 	d = pbs_in_struct(sa_pbs, &ipsec_sit_desc, &ipsecdoisit, sizeof(ipsecdoisit), NULL);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return SITUATION_NOT_SUPPORTED;	/* reject whole SA */
 	}
 
@@ -2905,7 +2904,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 			  &next_proposal, sizeof(next_proposal),
 			  &next_proposal_pbs);
 	if (d != NULL) {
-		log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+		llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 		return BAD_PROPOSAL_SYNTAX;	/* reject whole SA */
 	}
 
@@ -2967,7 +2966,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 							      filler, sizeof(filler),
 							      "CPI filler");
 					if (d != NULL) {
-						log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+						llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 						return INVALID_SPI;	/* reject whole SA */
 					}
 					if (!all_zero(filler, sizeof(filler))) {
@@ -2992,7 +2991,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 						      IPCOMP_CPI_SIZE,
 						      "CPI");
 				if (d != NULL) {
-					log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+					llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 					return INVALID_SPI;	/* reject whole SA */
 				}
 
@@ -3042,7 +3041,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 						      sizeof(next_spi),
 						      "SPI");
 				if (d != NULL) {
-					log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+					llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 					return INVALID_SPI;	/* reject whole SA */
 				}
 
@@ -3128,7 +3127,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 						 &next_proposal, sizeof(next_proposal),
 						 &next_proposal_pbs);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				return BAD_PROPOSAL_SYNTAX;	/* reject whole SA */
 			}
 		} while (next_proposal.isap_proposal == propno);
@@ -3207,8 +3206,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 			}
 			ah_attrs.spi = ah_spi;
 			inner_proto = &ip_protocol_ah;
-			if (ah_attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
+			if (ah_attrs.mode == ENCAPSULATION_MODE_TUNNEL)
 				tunnel_mode = TRUE;
 		}
 
@@ -3245,21 +3243,19 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 				 * the test should be pushed into
 				 * ikev1_verify_esp().
 				 */
-				if (esp_attrs.transattrs.ta_integ == &ike_alg_integ_none) {
-					if (!encrypt_desc_is_aead(esp_attrs.transattrs.ta_encrypt) &&
-					    !ah_seen) {
-						LSWDBGP(DBG_BASE, buf) {
-							jam_string(buf, "ESP from ");
-							jam_address(buf, &c->spd.that.host_addr);
-							jam_string(buf, " must either have AUTH or be combined with AH");
-						}
-						continue; /* try another */
+				if (esp_attrs.transattrs.ta_integ == &ike_alg_integ_none &&
+				    !encrypt_desc_is_aead(esp_attrs.transattrs.ta_encrypt) &&
+				    !ah_seen) {
+					LSWDBGP(DBG_BASE, buf) {
+						jam_string(buf, "ESP from ");
+						jam_address(buf, &c->spd.that.host_addr);
+						jam_string(buf, " must either have AUTH or be combined with AH");
 					}
+					continue; /* try another */
 				}
 
 				if (ah_seen &&
-				    ah_attrs.mode !=
-				      esp_attrs.mode) {
+				    ah_attrs.mode != esp_attrs.mode) {
 					log_state(RC_LOG_SERIOUS, st,
 						  "Skipped bogus proposal where AH and ESP transforms disagree about mode");
 					continue; /* try another */
@@ -3272,8 +3268,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 
 			esp_attrs.spi = esp_spi;
 			inner_proto = &ip_protocol_esp;
-			if (esp_attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
+			if (esp_attrs.mode == ENCAPSULATION_MODE_TUNNEL)
 				tunnel_mode = TRUE;
 		} else if (st->st_policy & POLICY_ENCRYPT) {
 			connection_buf cib;
@@ -3359,13 +3354,11 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 				}
 
 				if (ah_seen &&
-				    ah_attrs.mode !=
-				      ipcomp_attrs.mode) {
+				    ah_attrs.mode != ipcomp_attrs.mode) {
 					/* ??? This should be an error, but is it? */
 					dbg("AH and IPCOMP transforms disagree about mode; TUNNEL presumed");
 				} else if (esp_seen &&
-					   esp_attrs.mode !=
-					     ipcomp_attrs.mode) {
+					   esp_attrs.mode != ipcomp_attrs.mode) {
 					/* ??? This should be an error, but is it? */
 					dbg("ESP and IPCOMP transforms disagree about mode; TUNNEL presumed");
 				}
@@ -3374,10 +3367,10 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 			}
 			if (tn == ipcomp_proposal.isap_notrans)
 				continue; /* we didn't find a nice one */
+
 			ipcomp_attrs.spi = ipcomp_cpi;
 			inner_proto = &ip_protocol_comp;
-			if (ipcomp_attrs.mode ==
-			    ENCAPSULATION_MODE_TUNNEL)
+			if (ipcomp_attrs.mode == ENCAPSULATION_MODE_TUNNEL)
 				tunnel_mode = TRUE;
 		}
 
@@ -3400,7 +3393,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 					      &isakmp_ah_transform_desc,
 					      &ah_trans_pbs,
 					      &c->spd,
-					      tunnel_mode &&
+						tunnel_mode &&
 					      inner_proto == &ip_protocol_ah,
 					      st->st_logger);
 			}
@@ -3416,7 +3409,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 					      &esp_trans_pbs,
 					      &c->spd,
 					      tunnel_mode &&
-					      inner_proto == &ip_protocol_esp,
+						inner_proto == &ip_protocol_esp,
 					      st->st_logger);
 			}
 
@@ -3431,7 +3424,7 @@ notification_t parse_ipsec_sa_body(pb_stream *sa_pbs,           /* body of input
 					      &ipcomp_trans_pbs,
 					      &c->spd,
 					      tunnel_mode &&
-					      inner_proto == &ip_protocol_comp,
+						inner_proto == &ip_protocol_comp,
 					      st->st_logger);
 			}
 

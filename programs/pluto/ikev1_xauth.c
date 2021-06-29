@@ -186,7 +186,7 @@ static void fixup_xauth_hash(struct state *st,
  */
 static stf_status isakmp_add_attr(pb_stream *strattr,
 				   const int attr_type,
-				   const ip_address *ia,
+				   const ip_address ia,
 				   const struct state *st)
 {
 	bool ok = TRUE;
@@ -209,7 +209,7 @@ static stf_status isakmp_add_attr(pb_stream *strattr,
 	{
 		diag_t d = pbs_out_address(&attrval, ia, "IP_addr");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
 			return STF_INTERNAL_ERROR;
 		}
 		break;
@@ -217,10 +217,10 @@ static stf_status isakmp_add_attr(pb_stream *strattr,
 
 	case INTERNAL_IP4_SUBNET:
 	{
-		ip_address client_addr = selector_prefix(&c->spd.this.client);
-		diag_t d = pbs_out_address(&attrval, &client_addr, "IP4_subnet");
+		ip_address client_addr = selector_prefix(c->spd.this.client);
+		diag_t d = pbs_out_address(&attrval, client_addr, "IP4_subnet");
 		if (d != NULL) {
-			log_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
+			llog_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
 			return STF_INTERNAL_ERROR;
 		}
 	}
@@ -247,7 +247,7 @@ static stf_status isakmp_add_attr(pb_stream *strattr,
 
 		while (ipstr != NULL) {
 			ip_address dnsip;
-			err_t e = ttoaddr_num(ipstr, 0, AF_INET, &dnsip);
+			err_t e = ttoaddress_num(shunk1(ipstr), &ipv4_info, &dnsip);
 
 			if (e != NULL) {
 				log_state(RC_LOG_SERIOUS, st,
@@ -255,9 +255,9 @@ static stf_status isakmp_add_attr(pb_stream *strattr,
 				return STF_INTERNAL_ERROR;
 			}
 			/* emit attribute's value */
-			diag_t d = pbs_out_address(&attrval, &dnsip, "IP4_dns");
+			diag_t d = pbs_out_address(&attrval, dnsip, "IP4_dns");
 			if (d != NULL) {
-				log_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
+				llog_diag(RC_LOG_SERIOUS, attrval.outs_logger, &d, "%s", "");
 				return STF_INTERNAL_ERROR;
 			}
 
@@ -300,8 +300,8 @@ static stf_status isakmp_add_attr(pb_stream *strattr,
 	case CISCO_SPLIT_INC:
 	{
 		/* XXX: bitstomask(c->spd.this.client.maskbits), */
-		ip_address mask = selector_prefix_mask(&c->spd.this.client);
-		ip_address addr = selector_prefix(&c->spd.this.client);
+		ip_address mask = selector_prefix_mask(c->spd.this.client);
+		ip_address addr = selector_prefix(c->spd.this.client);
 		struct CISCO_split_item i = {
 			.cs_addr = { htonl(ntohl_address(&addr)), },
 			.cs_mask = { htonl(ntohl_address(&mask)), },
@@ -393,12 +393,12 @@ static stf_status modecfg_resp(struct state *st,
 				log_state(RC_LOG, st, "lease_an_address failure %s", e);
 				return STF_INTERNAL_ERROR;
 			}
-			ia = selector_prefix(&c->spd.that.client);
+			ia = selector_prefix(c->spd.that.client);
 			address_buf iab;
 			dbg("a lease %s", str_address(&ia, &iab));
 		} else {
 			pexpect(!selector_is_unset(&c->spd.that.client));
-			ia = selector_prefix(&c->spd.that.client);
+			ia = selector_prefix(c->spd.that.client);
 			address_buf iab;
 			dbg("a client %s", str_address(&ia, &iab));
 		}
@@ -413,7 +413,7 @@ static stf_status modecfg_resp(struct state *st,
 		attr_type = 0;
 		while (resp != LEMPTY) {
 			if (resp & 1) {
-				stf_status ret = isakmp_add_attr(&strattr, attr_type, &ia, st);
+				stf_status ret = isakmp_add_attr(&strattr, attr_type, ia, st);
 				if (ret != STF_OK)
 					return ret;
 			}
@@ -434,24 +434,24 @@ static stf_status modecfg_resp(struct state *st,
 		 */
 		if (c->modecfg_domains != NULL) {
 			dbg("We are sending '%s' as domain", strtok(c->modecfg_domains, ", "));
-			isakmp_add_attr(&strattr, MODECFG_DOMAIN, &ia, st);
+			isakmp_add_attr(&strattr, MODECFG_DOMAIN, ia, st);
 		} else {
 			dbg("we are not sending a domain");
 		}
 
 		if (c->modecfg_banner != NULL) {
 			dbg("We are sending '%s' as banner", c->modecfg_banner);
-			isakmp_add_attr(&strattr, MODECFG_BANNER, &ia, st);
+			isakmp_add_attr(&strattr, MODECFG_BANNER, ia, st);
 		} else {
 			dbg("We are not sending a banner");
 		}
 
 		if (selector_is_unset(&c->spd.this.client) ||
-		    selector_contains_all_addresses(&c->spd.this.client)) {
+		    selector_is_all(c->spd.this.client)) {
 			dbg("We are 0.0.0.0/0 so not sending CISCO_SPLIT_INC");
 		} else {
 			dbg("We are sending our subnet as CISCO_SPLIT_INC");
-			isakmp_add_attr(&strattr, CISCO_SPLIT_INC, &ia, st);
+			isakmp_add_attr(&strattr, CISCO_SPLIT_INC, ia, st);
 		}
 
 		if (!ikev1_close_message(&strattr, st))
@@ -858,52 +858,61 @@ static stf_status xauth_send_status(struct state *st, int status)
 	return STF_OK;
 }
 
+/*
+ * set user defined ip address or pool
+ */
+
 static bool add_xauth_addresspool(struct connection *c,
 				  const char *userid,
 				  const char *addresspool,
 				  struct logger *logger)
 {
-	/* set user defined ip address or pool */
-	bool ret = FALSE;
-	err_t er;
+	dbg("XAUTH: adding addresspool entry %s for the conn %s user %s",
+	    addresspool, c->name, userid);
+
+	/* allows <address>, <address>-<address> and <address>/bits */
+
 	ip_range pool_range;
-
-	if (strchr(addresspool, '-') == NULL) {
-		/* convert single ip address to addresspool */
-		char single_addresspool[128];
-
-		snprintf(single_addresspool, sizeof(single_addresspool),
-			"%s-%s",
-			addresspool, addresspool);
-		dbg("XAUTH: adding single ip addresspool entry %s for the conn %s user=%s",
-		    single_addresspool, c->name, userid);
-		er = ttorange(single_addresspool, &ipv4_info, &pool_range);
-	} else {
-		dbg("XAUTH: adding addresspool entry %s for the conn %s user %s",
-		    addresspool, c->name, userid);
-		er = ttorange(addresspool, &ipv4_info, &pool_range);
-	}
-	if (er != NULL) {
+	err_t err = ttorange(addresspool, &ipv4_info, &pool_range);
+	if (err != NULL) {
 		llog(RC_LOG, logger,
-			    "XAUTH IP address %s is not valid %s user=%s",
-			    addresspool, er, userid);
-	} else {
-		/* install new addresspool */
-
-		/* delete existing pool if it exists */
-		if (c->pool != NULL) {
-			free_that_address_lease(c);
-			unreference_addresspool(c);
-		}
-
-		c->pool = install_addresspool(&pool_range, logger);
-		if (c->pool != NULL) {
-			reference_addresspool(c);
-			ret = TRUE;
-		}
+		     "XAUTH IP addresspool %s for the conn %s user %s is not valid: %s",
+		     addresspool, c->name, userid, err);
+		return false;
 	}
 
-	return ret;
+	if (range_size(pool_range) == 0) {
+		/* should have been rejected by ttorange() */
+		llog(RC_LOG, logger,
+		     "XAUTH IP addresspool %s for the conn %s user=%s is empty!?!",
+		     addresspool, c->name, userid);
+		return false;
+	}
+
+	if (address_is_any(range_start(pool_range))) {
+		llog(RC_LOG, logger,
+		     "XAUTH IP addresspool %s for the conn %s user=%s cannot start at address zero",
+		     addresspool, c->name, userid);
+		return false;
+	}
+
+	/* install new addresspool */
+
+	/* delete existing pool if it exists */
+	if (c->pool != NULL) {
+		free_that_address_lease(c);
+		unreference_addresspool(c);
+	}
+
+	diag_t d = install_addresspool(pool_range, &c->pool);
+	if (d != NULL) {
+		llog_diag(RC_CLASH, logger, &d, "XAUTH: invalid addresspool for the conn %s user %s: ",
+			 c->name, userid);
+		return false;
+	}
+
+	reference_addresspool(c);
+	return true;
 }
 
 /** Do authentication via /etc/ipsec.d/passwd file using MD5 passwords
@@ -1275,7 +1284,7 @@ stf_status xauth_inR0(struct state *st, struct msg_digest *md)
 		diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 					 &attr, sizeof(attr), &strattr);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			/* fail if malformed */
 			return STF_FAIL;
 		}
@@ -1453,7 +1462,7 @@ stf_status modecfg_inR0(struct state *st, struct msg_digest *md)
 			diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 						 &attr, sizeof(attr), &strattr);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				/* reject malformed */
 				return STF_FAIL;
 			}
@@ -1507,7 +1516,7 @@ stf_status modecfg_inR0(struct state *st, struct msg_digest *md)
  */
 static stf_status modecfg_inI2(struct msg_digest *md, pb_stream *rbody)
 {
-	struct state *const st = md->st;
+	struct state *const st = md->v1_st;
 	struct isakmp_mode_attr *ma = &md->chain[ISAKMP_NEXT_MCFG_ATTR]->payload.mode_attribute;
 	pb_stream *attrs = &md->chain[ISAKMP_NEXT_MCFG_ATTR]->pbs;
 	uint16_t isama_id = ma->isama_identifier;
@@ -1533,7 +1542,7 @@ static stf_status modecfg_inI2(struct msg_digest *md, pb_stream *rbody)
 		diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 					 &attr, sizeof(attr), &strattr);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			/* reject malformed */
 			return STF_FAIL;
 		}
@@ -1546,17 +1555,17 @@ static stf_status modecfg_inI2(struct msg_digest *md, pb_stream *rbody)
 			ip_address a;
 			diag_t d = pbs_in_address(&strattr, &a, &ipv4_info, "addr");
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				return STF_FATAL;
 			}
-			c->spd.this.client = selector_from_address(&a);
+			c->spd.this.client = selector_from_address(a);
 
 			c->spd.this.has_client = TRUE;
 			subnet_buf caddr;
 			str_selector_subnet(&c->spd.this.client, &caddr);
 			log_state(RC_LOG, st, "Received IP address %s", caddr.buf);
 
-			if (!address_is_specified(&c->spd.this.host_srcip)) {
+			if (!address_is_specified(c->spd.this.host_srcip)) {
 				log_state(RC_LOG, st, "setting ip source address to %s",
 					  caddr.buf);
 				c->spd.this.host_srcip = a;
@@ -1652,10 +1661,11 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 		while (pbs_left(attrs) >= isakmp_xauth_attribute_desc.size) {
 			struct isakmp_attribute attr;
 
+			pb_stream ignored;	/* we ignore the attribute value */
 			diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
-						 &attr, sizeof(attr), NULL);
+						 &attr, sizeof(attr), &ignored);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				/* reject malformed */
 				return STF_FAIL;
 			}
@@ -1692,7 +1702,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 			diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 						 &attr, sizeof(attr), &strattr);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				/* reject malformed */
 				return STF_FAIL;
 			}
@@ -1705,10 +1715,10 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 				ip_address a;
 				diag_t d = pbs_in_address(&strattr, &a, &ipv4_info, "addr");
 				if (d != NULL) {
-					log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+					llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 					return STF_FATAL;
 				}
-				c->spd.this.client = selector_from_address(&a);
+				c->spd.this.client = selector_from_address(a);
 
 				c->spd.this.has_client = TRUE;
 				subnet_buf caddr;
@@ -1717,7 +1727,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 					  "Received IPv4 address: %s",
 					  caddr.buf);
 
-				if (!address_is_specified(&c->spd.this.host_srcip)) {
+				if (!address_is_specified(c->spd.this.host_srcip)) {
 					dbg("setting ip source address to %s",
 					    caddr.buf);
 					c->spd.this.host_srcip = a;
@@ -1731,7 +1741,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 				ip_address a;
 				diag_t d = pbs_in_address(&strattr, &a, &ipv4_info, "addr");
 				if (d != NULL) {
-					log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+					llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 					return STF_FATAL;
 				}
 
@@ -1746,7 +1756,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 				ip_address a;
 				diag_t d = pbs_in_address(&strattr, &a, &ipv4_info, "addr");
 				if (d != NULL) {
-					log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+					llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 					return STF_FATAL;
 				}
 
@@ -1796,7 +1806,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 					diag_t d = pbs_in_struct(&strattr, &CISCO_split_desc,
 								 &i, sizeof(i), NULL);
 					if (d != NULL) {
-						log_diag(RC_INFORMATIONAL, st->st_logger, &d,
+						llog_diag(RC_INFORMATIONAL, st->st_logger, &d,
 							 "ignoring malformed CISCO_SPLIT_INC payload");
 						break;
 					}
@@ -1804,14 +1814,14 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 					ip_address base = address_from_in_addr(&i.cs_addr);
 					ip_address mask = address_from_in_addr(&i.cs_mask);
 					ip_subnet wire_subnet;
-					err_t ugh = address_mask_to_subnet(&base, &mask, &wire_subnet);
+					err_t ugh = address_mask_to_subnet(base, mask, &wire_subnet);
 					if (ugh != NULL) {
 						log_state(RC_INFORMATIONAL, st,
 							  "ignoring malformed CISCO_SPLIT_INC subnet: %s",
 							  ugh);
 						break;
 					}
-					ip_selector wire_selector = selector_from_subnet(&wire_subnet);
+					ip_selector wire_selector = selector_from_subnet(wire_subnet);
 
 					subnet_buf pretty_subnet;
 					str_subnet(&wire_subnet, &pretty_subnet);
@@ -1822,7 +1832,7 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 
 					struct spd_route *sr;
 					for (sr = &c->spd; ; sr = sr->spd_next) {
-						if (selector_subnet_eq(&wire_selector, &sr->that.client)) {
+						if (selector_subnet_eq_subnet(wire_selector, sr->that.client)) {
 							/* duplicate entry: ignore */
 							log_state(RC_INFORMATIONAL, st,
 								  "Subnet %s already has an spd_route - ignoring",
@@ -1839,8 +1849,6 @@ stf_status modecfg_inR1(struct state *st, struct msg_digest *md)
 
 							sr->this.host_addr_name = NULL;
 							sr->that.client = wire_selector;
-							sr->this.cert.ty = CERT_NONE;
-							sr->that.cert.ty = CERT_NONE;
 
 							sr->this.ca = EMPTY_CHUNK;
 							sr->that.ca = EMPTY_CHUNK;
@@ -2067,9 +2075,8 @@ static stf_status xauth_client_resp(struct state *st,
 						discard_pw = TRUE;
 					}
 
-					if (!pbs_out_hunk(st->st_xauth_password,
-							  &attrval,
-							  "XAUTH password")) {
+					if (!out_hunk(st->st_xauth_password, &attrval,
+						      "XAUTH password")) {
 						if (discard_pw) {
 							free_chunk_content(&st->st_xauth_password);
 						}
@@ -2085,7 +2092,7 @@ static stf_status xauth_client_resp(struct state *st,
 				default:
 				{
 					esb_buf b;
-					log_state(RC_LOG, st, 
+					log_state(RC_LOG, st,
 						"trying to send XAUTH reply, sending %s instead.",
 						  enum_show(&modecfg_attr_names, attr_type, &b));
 					break;
@@ -2157,7 +2164,7 @@ stf_status xauth_inI0(struct state *st, struct msg_digest *md)
 
 	switch (ma->isama_type) {
 	default:
-		log_state(RC_LOG, st, 
+		log_state(RC_LOG, st,
 			"Expecting ISAKMP_CFG_REQUEST or ISAKMP_CFG_SET, got %s instead (ignored).",
 			enum_name(&attr_msg_type_names,
 				  ma->isama_type));
@@ -2180,7 +2187,7 @@ stf_status xauth_inI0(struct state *st, struct msg_digest *md)
 		diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 					 &attr, sizeof(attr), &strattr);
 		if (d != NULL) {
-			log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+			llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 			/* reject malformed */
 			return STF_FAIL;
 		}
@@ -2224,7 +2231,7 @@ stf_status xauth_inI0(struct state *st, struct msg_digest *md)
 
 		case XAUTH_TYPE | ISAKMP_ATTR_AF_TV:
 			if (attr.isaat_lv != XAUTH_TYPE_GENERIC) {
-				log_state(RC_LOG, st, 
+				log_state(RC_LOG, st,
 					"XAUTH: Unsupported type: %d",
 					attr.isaat_lv);
 				return STF_IGNORE;
@@ -2305,13 +2312,13 @@ stf_status xauth_inI0(struct state *st, struct msg_digest *md)
 			XAUTHLELEM(XAUTH_USER_PASSWORD)))
 		{
 			if (st->st_connection->spd.this.xauth_client) {
-				log_state(RC_LOG, st, 
+				log_state(RC_LOG, st,
 					"XAUTH: No username or password request was received.");
 				return STF_IGNORE;
 			}
 		} else {
 			if (!st->st_connection->spd.this.xauth_client) {
-				log_state(RC_LOG, st, 
+				log_state(RC_LOG, st,
 					"XAUTH: Username or password request was received, but XAUTH client mode not enabled.");
 				return STF_IGNORE;
 			}
@@ -2412,7 +2419,7 @@ stf_status xauth_inI1(struct state *st, struct msg_digest *md)
 
 	switch (ma->isama_type) {
 	default:
-		log_state(RC_LOG, st, 
+		log_state(RC_LOG, st,
 			"Expecting MODE_CFG_SET, got %x instead.",
 			ma->isama_type);
 		return STF_IGNORE;
@@ -2426,7 +2433,7 @@ stf_status xauth_inI1(struct state *st, struct msg_digest *md)
 			diag_t d = pbs_in_struct(attrs, &isakmp_xauth_attribute_desc,
 						 &attr, sizeof(attr), &strattr);
 			if (d != NULL) {
-				log_diag(RC_LOG, st->st_logger, &d, "%s", "");
+				llog_diag(RC_LOG, st->st_logger, &d, "%s", "");
 				/* reject malformed */
 				return STF_FAIL;
 			}
@@ -2451,7 +2458,7 @@ stf_status xauth_inI1(struct state *st, struct msg_digest *md)
 			default:
 			{
 				esb_buf b;
-				log_state(RC_LOG, st, 
+				log_state(RC_LOG, st,
 					"while waiting for XAUTH_STATUS, got %s %s instead.",
 					(attr.isaat_af_type & ISAKMP_ATTR_AF_MASK) == ISAKMP_ATTR_AF_TV ? "basic" : "long",
 					enum_show(&modecfg_attr_names,
@@ -2466,7 +2473,7 @@ stf_status xauth_inI1(struct state *st, struct msg_digest *md)
 	/* first check if we might be done! */
 	if (!got_status || status == XAUTH_STATUS_FAIL) {
 		/* oops, something seriously wrong */
-		log_state(RC_LOG, st, 
+		log_state(RC_LOG, st,
 			"did not get status attribute in xauth_inI1, looking for new challenge.");
 		change_state(st, STATE_XAUTH_I0);
 		return xauth_inI0(st, md);

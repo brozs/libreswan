@@ -128,10 +128,9 @@ static stf_status cert_decode_completed(struct state *st,
 		 *
 		 * Trigger a refresh.
 		 */
-		SECItem fdn = { siBuffer, NULL, 0 };
-		if (find_fetch_dn(&fdn, ike->sa.st_connection, NULL)) {
-			add_crl_fetch_requests(crl_fetch_request(&fdn, NULL,
-								 NULL, ike->sa.st_logger));
+		chunk_t fdn = empty_chunk;
+		if (find_crl_fetch_dn(&fdn, ike->sa.st_connection)) {
+			submit_crl_fetch_request(fdn, ike->sa.st_logger);
 		}
 		pexpect(task->verified.cert_chain == NULL);
 		pexpect(task->verified.pubkey_db == NULL);
@@ -161,8 +160,7 @@ static stf_status cert_decode_completed(struct state *st,
 		if (ike->sa.st_remote_certs.verified != NULL) {
 			CERTCertificate *end_cert = ike->sa.st_remote_certs.verified->cert;
 			passert(end_cert != NULL);
-			log_state(RC_LOG, &ike->sa,
-				  "certificate verified OK: %s", end_cert->subjectName);
+			dbg("certificate verified OK: %s", end_cert->subjectName);
 		}
 	} else {
 		pexpect(ike->sa.st_remote_certs.verified == NULL);
@@ -177,12 +175,12 @@ static stf_status cert_decode_completed(struct state *st,
 			pstat_sa_failed(&ike->sa, REASON_AUTH_FAILED);
 			return STF_FATAL;
 		}
-               /*
-                * The 'end-cert' was bad so all the certs have been
-                * tossed.  However, since this is the responder
-                * stumble on.  There might be a connection that still
-                * authenticates (after a switch?).
-                */
+	       /*
+		* The 'end-cert' was bad so all the certs have been
+		* tossed.  However, since this is the responder
+		* stumble on.  There might be a connection that still
+		* authenticates (after a switch?).
+		*/
 	}
 
 	return task->cb(st, md);
